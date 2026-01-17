@@ -203,11 +203,13 @@ The following tutorials are available to help you get started with `SQuADDS`:
 The `PhysicsLearning.ipynb` notebook demonstrates physics-informed machine learning for superconducting qubit design. To run it:
 
 1. **Install dependencies** (includes `interpret` for EBM and `pysr` for symbolic regression):
+
    ```bash
    uv sync --extra ml
    ```
 
 2. **Set up the Jupyter kernel**:
+
    ```bash
    uv run python -m ipykernel install --user --name squadds --display-name "SQuADDS (uv)"
    ```
@@ -250,31 +252,32 @@ For inquiries or support, please contact [Sadman Ahmed Shanto](mailto:shanto@usc
 
 ## Contributors
 
-
-| Name                  | Institution                        | Contribution                         |
-|:----------------------|:-----------------------------------|:-------------------------------------|
-| Clark Miyamoto        | New York University                | Code contributor                     |
-| Madison Howard        | California Institute of Technology | Bug Hunter                           |
-| Evangelos Vlachos     | University of Southern California  | Code contributor                     |
-| Kaveh Pezeshki        | Stanford University                | Documentation contributor            |
-| Anne Whelan           | US Navy                            | Documentation contributor            |
-| Jenny Huang           | Columbia University                | Documentation contributor            |
-| Connie Miao           | Stanford University                | Data Contributor                     |
-| Malida Hecht          | University of Southern California  | Data contributor                     |
-| Daria Kowsari, PhD    | University of Southern California  | Data contributor                     |
-| Vivek Maurya          | University of Southern California  | Data contributor                     |
-| Haimeng Zhang, PhD    | IBM                                | Data contributor                     |
-| Elizabeth Kunz        | University of Southern California  | Documentation  and  Code contributor |
-| Adhish Chakravorty    | University of Southern California  | Documentation  and  Code contributor |
-| Ethan Zheng           | University of Southern California  | Data contributor  and Bug Hunter     |
-| Sara Sussman, PhD     | Fermilab                           | Bug Hunter                           |
-| Priyangshu Chatterjee | IIT Kharagpur                      | Documentation contributor            |
+| Name                  | Institution                        | Contribution                       |
+| :-------------------- | :--------------------------------- | :--------------------------------- |
+| Clark Miyamoto        | New York University                | Code contributor                   |
+| Madison Howard        | California Institute of Technology | Bug Hunter                         |
+| Evangelos Vlachos     | University of Southern California  | Code contributor                   |
+| Kaveh Pezeshki        | Stanford University                | Documentation contributor          |
+| Anne Whelan           | US Navy                            | Documentation contributor          |
+| Jenny Huang           | Columbia University                | Documentation contributor          |
+| Connie Miao           | Stanford University                | Data Contributor                   |
+| Malida Hecht          | University of Southern California  | Data contributor                   |
+| Daria Kowsari, PhD    | University of Southern California  | Data contributor                   |
+| Vivek Maurya          | University of Southern California  | Data contributor                   |
+| Haimeng Zhang, PhD    | IBM                                | Data contributor                   |
+| Elizabeth Kunz        | University of Southern California  | Documentation and Code contributor |
+| Adhish Chakravorty    | University of Southern California  | Documentation and Code contributor |
+| Ethan Zheng           | University of Southern California  | Data contributor and Bug Hunter    |
+| Sara Sussman, PhD     | Fermilab                           | Bug Hunter                         |
+| Priyangshu Chatterjee | IIT Kharagpur                      | Documentation contributor          |
 
 ## Developers
+
 - [shanto268](https://github.com/shanto268) - 414 contributions
 - [elizabethkunz](https://github.com/elizabethkunz) - 17 contributions
 - [LFL-Lab](https://github.com/LFL-Lab) - 9 contributions
 - [NxtGenLegend](https://github.com/NxtGenLegend) - 1 contributions
 - [ethanzhen7](https://github.com/ethanzhen7) - 1 contributions
 - [PCodeShark25](https://github.com/PCodeShark25) - 1 contributions
+
 ---
