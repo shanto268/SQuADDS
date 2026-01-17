@@ -196,6 +196,27 @@ The following tutorials are available to help you get started with `SQuADDS`:
 - [Tutorial 7: Simulate designs with palace](https://lfl-lab.github.io/SQuADDS/source/tutorials/Tutorial-7_Simulate_designs_with_palace.html)
 - [Tutorial 8: ML Interpolation in SQuADDS](https://lfl-lab.github.io/SQuADDS/source/tutorials/Tutorial-8_ML_interpolation_in_SQuADDS.html)
 - [Tutorial 9: Learning the Inverse Map](https://lfl-lab.github.io/SQuADDS/source/tutorials/Tutorial-9_Learing_the_Inverse_Design_Map.html)
+- [PhysicsLearning: Explainable ML for Inverse Design](tutorials/PhysicsLearning.ipynb) - Uses EBM + Symbolic Regression to discover physics equations
+
+### Running the PhysicsLearning Notebook
+
+The `PhysicsLearning.ipynb` notebook demonstrates physics-informed machine learning for superconducting qubit design. To run it:
+
+1. **Install dependencies** (includes `interpret` for EBM and `pysr` for symbolic regression):
+   ```bash
+   uv sync --extra ml
+   ```
+
+2. **Set up the Jupyter kernel**:
+   ```bash
+   uv run python -m ipykernel install --user --name squadds --display-name "SQuADDS (uv)"
+   ```
+
+3. **Open the notebook** and select the **"SQuADDS (uv)"** kernel.
+
+4. **Required data files** (included in `tutorials/data/`):
+   - `training_data.parquet` - Dataset 1 (fixed EJ)
+   - `training_data_v5_expanded.parquet` - Dataset 2 (variable EJ)
 
 ---
 
@@ -257,7 +278,3 @@ For inquiries or support, please contact [Sadman Ahmed Shanto](mailto:shanto@usc
 - [ethanzhen7](https://github.com/ethanzhen7) - 1 contributions
 - [PCodeShark25](https://github.com/PCodeShark25) - 1 contributions
 ---
-
-
-
-
