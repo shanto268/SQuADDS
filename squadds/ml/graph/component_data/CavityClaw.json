@@ -1,0 +1,106 @@
+{
+  "component_name": "CavityClaw",
+  "base_class": "QComponent",
+  "category": "Cavity",
+  "description": "A coupled qubit-cavity system consisting of a TransmonClaw qubit, a CoupledLineTee coupler, and a meandered CPW resonator.",
+  "design_parameters": [
+    {
+      "parameter_name": "coupler_type",
+      "default_value": "CLT",
+      "data_type": "string",
+      "physical_description": "Type of coupler used: CLT (CoupledLineTee) or CapN (CapNInterdigitalTee)."
+    },
+    {
+      "parameter_name": "coupling_length",
+      "default_value": "200um",
+      "data_type": "distance",
+      "physical_description": "Length of the coupling region between feedline and resonator."
+    },
+    {
+      "parameter_name": "total_length",
+      "default_value": "4000um",
+      "data_type": "distance",
+      "physical_description": "Total length of the meandered CPW resonator."
+    },
+    {
+      "parameter_name": "meander_spacing",
+      "default_value": "100um",
+      "data_type": "distance",
+      "physical_description": "Spacing between adjacent meander segments of the CPW."
+    },
+    {
+      "parameter_name": "fillet",
+      "default_value": "49.9um",
+      "data_type": "distance",
+      "physical_description": "Fillet (rounding) radius applied at CPW bends."
+    },
+    {
+      "parameter_name": "claw_length",
+      "default_value": "30um",
+      "data_type": "distance",
+      "physical_description": "Length of the claw arms on the TransmonClaw coupler."
+    },
+    {
+      "parameter_name": "claw_width",
+      "default_value": "10um",
+      "data_type": "distance",
+      "physical_description": "Width of the CPW center trace forming the claw connector."
+    },
+    {
+      "parameter_name": "claw_gap",
+      "default_value": "6um",
+      "data_type": "distance",
+      "physical_description": "Gap of the CPW trace forming the claw connector."
+    },
+    {
+      "parameter_name": "ground_spacing",
+      "default_value": "5um",
+      "data_type": "distance",
+      "physical_description": "Ground plane gap between the claw connector and the cross arm."
+    },
+    {
+      "parameter_name": "claw_cpw_length",
+      "default_value": "40um",
+      "data_type": "distance",
+      "physical_description": "Length of the CPW lead extending from the claw."
+    },
+    {
+      "parameter_name": "claw_cpw_width",
+      "default_value": "10um",
+      "data_type": "distance",
+      "physical_description": "Width of the CPW lead extending from the claw."
+    },
+    {
+      "parameter_name": "coupler_orientation",
+      "default_value": "180",
+      "data_type": "int_as_string",
+      "physical_description": "Orientation angle of the coupler in degrees."
+    }
+  ],
+  "geometric_equations": {
+    "area": "total_length * claw_cpw_width + 2 * claw_length * claw_width",
+    "perimeter": "2 * (total_length + claw_cpw_width) + 4 * claw_length + 2 * claw_width",
+    "notes": "Approximate: CPW trace area = total_length * trace_width. Claw adds two rectangular arms. Precise area depends on meander routing and fillet radii."
+  },
+  "pins": [
+    {
+      "pin_name": "prime_start",
+      "width": "from coupler",
+      "orientation_derivation": "Start of the feedline through-port on the CoupledLineTee coupler."
+    },
+    {
+      "pin_name": "prime_end",
+      "width": "from coupler",
+      "orientation_derivation": "End of the feedline through-port on the CoupledLineTee coupler."
+    },
+    {
+      "pin_name": "claw_connector",
+      "width": "from claw_cpw_width",
+      "orientation_derivation": "The claw connector pin on the TransmonClaw, connecting to the qubit."
+    }
+  ],
+  "sub_components": ["TransmonClaw", "CoupledLineTee", "RouteMeander"],
+  "connectivity_type": "cavity",
+  "fabrication_notes": "Single metal layer; meandered CPW with fillet bends. Coupler is a CoupledLineTee with coupling_length controlling the coupling strength.",
+  "instantiation_snippet": "CavityClaw(design, 'name')"
+}

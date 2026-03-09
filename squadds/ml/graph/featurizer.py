@@ -4,7 +4,7 @@ Data pipeline utilities for converting SQuADDS layouts into graph objects.
 Provides:
 - ``ComponentFeaturizer``: Extracts raw heterogeneous features from a single component.
 - ``CircuitGraphBuilder``: Assembles per-component features into a ``spektral.data.Graph``.
-- ``SQuADDSGraphDataset``: A ``spektral.data.Dataset`` for batched training.
+- ``SQuADDSGraphDataset``: A lightweight wrapper for train/val/test splits.
 - ``build_vocab``: Builds a parameter-key vocabulary from enriched component JSONs.
 """
 
@@ -19,7 +19,7 @@ import numpy as np
 import scipy.sparse as sp
 
 # ---------------------------------------------------------------------------
-# Lazy TF / Spektral imports — called only when functionality is used
+# Lazy Spektral import
 # ---------------------------------------------------------------------------
 
 _spektral = None
@@ -45,22 +45,14 @@ def _ensure_spektral():
 
 PAD_TOKEN = "<PAD>"
 
-# Default silicon/aluminium layer-stack properties
-# Each row: [thickness_nm, dielectric_constant, penetration_depth_nm]
-DEFAULT_LAYER_STACK = np.array(
-    [
-        [500_000.0, 11.45, 0.0],  # Substrate (Si, 500 µm)
-        [100.0, 1.0, 50.0],  # Metal (Al, 100 nm)
-        [1e6, 1.0, 0.0],  # Air gap
-        [0.0, 0.0, 0.0],  # Pad (unused)
-        [0.0, 0.0, 0.0],  # Pad (unused)
-    ],
-    dtype=np.float32,
-)
+# Default silicon/aluminium layer-stack: [(thickness_um, permittivity), ...]
+# Ordered bottom-to-top.
+DEFAULT_LAYER_STACK = [
+    (350.0, 11.45),  # Si substrate
+    (0.25, 0.0),  # Al metal (250 nm → 0.25 µm)
+]
 
-N_LAYER_STACK_ROWS = 5
-N_LAYER_STACK_COLS = 3
-N_PORT_TYPES = 4  # [claw, gap, cpw, flux_line]
+N_PORT_TYPES = 5  # [connector, mwave, o2g, RLC, LumpedPort]
 
 # Regex to strip unit suffixes like "20um", "5.3mm"
 _UNIT_RE = re.compile(r"^([+-]?\d+\.?\d*)\s*(um|mm|nm|m|cm)?$", re.IGNORECASE)
@@ -71,7 +63,7 @@ _UNIT_TO_UM = {
     "mm": 1e3,
     "cm": 1e4,
     "m": 1e6,
-    None: 1.0,  # dimensionless
+    None: 1.0,
 }
 
 
@@ -95,19 +87,19 @@ def _parse_value(val: Any) -> float | None:
 
 def build_vocab(
     json_dir: str | Path | None = None,
+    extra_jsons: list[str | Path] | None = None,
     save_path: str | Path | None = None,
 ) -> dict[str, int]:
     """Build a parameter-key → integer vocabulary from enriched component JSONs.
 
     Args:
-        json_dir: Directory containing enriched ``*.json`` component files.
-            Defaults to ``qiskit_metal/dataset_output/`` inside the active
-            virtual-environment site-packages.
+        json_dir: Directory with enriched ``*.json`` files (defaults to
+            ``qiskit_metal/dataset_output/``).
+        extra_jsons: Additional JSON file paths to include (e.g. CavityClaw.json).
         save_path: Optional path to persist the vocabulary as JSON.
 
     Returns:
-        Mapping from parameter key string to integer id (0 is reserved for
-        the ``<PAD>`` token).
+        ``{param_key: int_id}``.  Index 0 is reserved for ``<PAD>``.
     """
     if json_dir is None:
         try:
@@ -119,12 +111,28 @@ def build_vocab(
                 "Cannot locate enriched component JSONs. Provide json_dir explicitly or install qiskit-metal."
             ) from exc
     json_dir = Path(json_dir)
-    if not json_dir.is_dir():
-        raise FileNotFoundError(f"JSON directory not found: {json_dir}")
 
     keys: set[str] = set()
-    for fp in sorted(json_dir.glob("*.json")):
-        if fp.name == "all_components.json":
+
+    # Scan standard directory
+    if json_dir.is_dir():
+        for fp in sorted(json_dir.glob("*.json")):
+            if fp.name == "all_components.json":
+                continue
+            try:
+                with open(fp) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            for param in data.get("design_parameters", []):
+                name = param.get("parameter_name", "")
+                if name:
+                    keys.add(name)
+
+    # Scan extra JSONs
+    for fp in extra_jsons or []:
+        fp = Path(fp)
+        if not fp.exists():
             continue
         try:
             with open(fp) as f:
@@ -136,7 +144,6 @@ def build_vocab(
             if name:
                 keys.add(name)
 
-    # Deterministic ordering: PAD at 0, then alphabetical
     vocab: dict[str, int] = {PAD_TOKEN: 0}
     for i, k in enumerate(sorted(keys), start=1):
         vocab[k] = i
@@ -158,112 +165,119 @@ def build_vocab(
 class ComponentFeaturizer:
     """Extract raw features from a single qiskit-metal component.
 
+    The featurizer loads ALL design params from the component's enriched JSON
+    (defaults) and overrides the swept values from the dataset row.  This
+    ensures every component always produces the full parameter set.
+
     Args:
         vocab: Parameter-key vocabulary (from ``build_vocab``).
-        json_dir: Path to enriched component JSONs (optional, auto-detected).
+        json_dir: Path to enriched component JSONs.
+        extra_json_dir: Additional directory for custom component JSONs
+            (e.g. ``CavityClaw.json``).
     """
 
     def __init__(
         self,
         vocab: dict[str, int],
         json_dir: str | Path | None = None,
+        extra_json_dir: str | Path | None = None,
     ):
         self.vocab = vocab
         self._json_cache: dict[str, dict] = {}
 
-        if json_dir is None:
+        self._json_dirs: list[Path] = []
+        if json_dir is not None:
+            self._json_dirs.append(Path(json_dir))
+        else:
             try:
                 import qiskit_metal
 
-                json_dir = Path(qiskit_metal.__file__).parent / "dataset_output"
+                self._json_dirs.append(Path(qiskit_metal.__file__).parent / "dataset_output")
             except ImportError:
-                json_dir = None
-        self.json_dir = Path(json_dir) if json_dir else None
-
-    # -- helpers --------------------------------------------------------
+                pass
+        if extra_json_dir is not None:
+            self._json_dirs.append(Path(extra_json_dir))
 
     def _load_json(self, component_type: str) -> dict | None:
         if component_type in self._json_cache:
             return self._json_cache[component_type]
-        if self.json_dir is None:
-            return None
-        fp = self.json_dir / f"{component_type}.json"
-        if not fp.exists():
-            return None
-        with open(fp) as f:
-            data = json.load(f)
-        self._json_cache[component_type] = data
-        return data
-
-    # -- public API -----------------------------------------------------
+        for d in self._json_dirs:
+            fp = d / f"{component_type}.json"
+            if fp.exists():
+                with open(fp) as f:
+                    data = json.load(f)
+                self._json_cache[component_type] = data
+                return data
+        return None
 
     def featurize(
         self,
         component_type: str,
-        design_options: dict[str, Any],
+        design_overrides: dict[str, Any],
+        layer_stack: list[tuple[float, float]] | None = None,
+        ports_vector: list[float | int] | None = None,
     ) -> dict[str, Any]:
         """Convert a component into a raw feature dictionary.
 
         Args:
-            component_type: E.g. ``"TransmonCross"``.
-            design_options: The design-parameter dict (values may include
-                unit strings like ``"20um"``).
+            component_type: E.g. ``"TransmonCross"`` or ``"CavityClaw"``.
+            design_overrides: Dict of swept/overridden param values.  Merged
+                on top of the JSON defaults.
+            layer_stack: Ordered bottom-to-top list of ``(thickness_um, permittivity)``.
+                Defaults to ``DEFAULT_LAYER_STACK``.
+            ports_vector: 5-element list ``[connector, mwave, o2g, RLC, LumpedPort]``.
+                Defaults to a zero vector.
 
         Returns:
-            Dict with keys:
-            - ``layer_stack`` : ``np.ndarray`` of shape ``(5, 3)``
-            - ``design_params`` : ``list[tuple[int, float]]`` — ``(key_id, value)``
-            - ``area`` : ``float``
-            - ``perimeter`` : ``float``
-            - ``ports`` : ``np.ndarray`` of shape ``(4,)``
+            ``{ layer_stack, design_params, area, perimeter, ports }``
         """
         meta = self._load_json(component_type)
 
-        # --- Layer stack (default for now) ---
-        layer_stack = DEFAULT_LAYER_STACK.copy()
+        # --- Layer stack ---
+        ls = layer_stack if layer_stack is not None else DEFAULT_LAYER_STACK
 
-        # --- Design parameters → (key_id, parsed_value) ---
+        # --- ALL design params: defaults from JSON + overrides ---
+        all_params: dict[str, Any] = {}
+        if meta:
+            for param in meta.get("design_parameters", []):
+                pname = param.get("parameter_name", "")
+                if pname:
+                    all_params[pname] = param.get("default_value", "0")
+
+        # Override with swept/user values
+        flat_overrides = _flatten_dict(design_overrides)
+        all_params.update(flat_overrides)
+
+        # Convert to (key_id, value) pairs
         design_params: list[tuple[int, float]] = []
-        flat_opts = _flatten_dict(design_options)
-        for key, val in flat_opts.items():
+        for key, val in all_params.items():
             parsed = _parse_value(val)
             if parsed is not None:
                 key_id = self.vocab.get(key, self.vocab.get(PAD_TOKEN, 0))
                 design_params.append((key_id, parsed))
 
-        # --- Area & perimeter (from enriched JSON geometric equations) ---
+        # --- Area & perimeter ---
         area = 0.0
         perimeter = 0.0
         if meta and "geometric_equations" in meta:
             geom = meta["geometric_equations"]
-            area = _eval_geom_expr(geom.get("area", "0"), flat_opts)
-            perimeter = _eval_geom_expr(geom.get("perimeter", "0"), flat_opts)
+            area = _eval_geom_expr(geom.get("area", "0"), all_params)
+            perimeter = _eval_geom_expr(geom.get("perimeter", "0"), all_params)
 
         # --- Ports vector ---
-        ports = np.zeros(N_PORT_TYPES, dtype=np.float32)
-        if meta and "pins" in meta:
-            ports[0] = len(meta["pins"])  # approximate: count all pins as claw
-        # Refine from connection_pads if available
-        conn_pads = design_options.get("connection_pads", {})
-        if isinstance(conn_pads, dict):
-            for _pad_name, pad_opts in conn_pads.items():
-                if isinstance(pad_opts, dict):
-                    ctype = pad_opts.get("connector_type", "0")
-                    try:
-                        ctype = int(ctype)
-                    except (ValueError, TypeError):
-                        ctype = 0
-                    if ctype == 0:
-                        ports[0] += 1  # claw
-                    elif ctype == 1:
-                        ports[1] += 1  # gap
+        if ports_vector is not None:
+            ports = np.array(ports_vector, dtype=np.float32)
+            if len(ports) < N_PORT_TYPES:
+                ports = np.pad(ports, (0, N_PORT_TYPES - len(ports)))
+        else:
+            ports = np.zeros(N_PORT_TYPES, dtype=np.float32)
 
         return {
-            "layer_stack": layer_stack,
+            "layer_stack": ls,
             "design_params": design_params,
             "area": float(area),
             "perimeter": float(perimeter),
-            "ports": ports,
+            "ports": ports[:N_PORT_TYPES],
         }
 
 
@@ -277,71 +291,100 @@ class CircuitGraphBuilder:
 
     Args:
         vocab: Parameter-key vocabulary.
-        k_max: Maximum number of design parameters per component (for padding).
+        k_max: Maximum design parameters per component (for padding).
+        n_ls: Number of layer-stack rows (padded).
         json_dir: Path to enriched component JSONs.
+        extra_json_dir: Additional directory for custom component JSONs.
     """
 
     def __init__(
         self,
         vocab: dict[str, int],
         k_max: int = 20,
+        n_ls: int = 5,
         json_dir: str | Path | None = None,
+        extra_json_dir: str | Path | None = None,
     ):
         self.vocab = vocab
         self.k_max = k_max
-        self.featurizer = ComponentFeaturizer(vocab=vocab, json_dir=json_dir)
+        self.n_ls = n_ls
+        self.featurizer = ComponentFeaturizer(
+            vocab=vocab,
+            json_dir=json_dir,
+            extra_json_dir=extra_json_dir,
+        )
 
     def build(
         self,
-        components: list[tuple[str, dict[str, Any]]],
+        components: list[dict[str, Any]],
         edges: list[tuple[int, int]],
         targets: np.ndarray | list[float] | None = None,
     ):
         """Build a ``spektral.data.Graph``.
 
         Args:
-            components: List of ``(component_type, design_options)`` per node.
-            edges: List of ``(src_idx, dst_idx)`` index pairs (0-based).
+            components: List of dicts, each containing::
+
+                {
+                    "type": "TransmonCross",
+                    "design_overrides": {"cross_length": "310um", ...},
+                    "layer_stack": [(350.0, 11.45), (0.25, 0.0)],  # optional
+                    "ports_vector": [1, 0, 2, 0, 1],              # optional
+                }
+
+            edges: ``(src, dst)`` node-index pairs.
             targets: Optional Hamiltonian target vector.
 
         Returns:
-            A ``spektral.data.Graph`` instance.
+            A ``spektral.data.Graph``.
         """
         spektral = _ensure_spektral()
         n = len(components)
 
-        # Collect raw features
-        raw_features = [self.featurizer.featurize(ctype, opts) for ctype, opts in components]
+        raw_features = []
+        for comp in components:
+            rf = self.featurizer.featurize(
+                component_type=comp["type"],
+                design_overrides=comp.get("design_overrides", {}),
+                layer_stack=comp.get("layer_stack"),
+                ports_vector=comp.get("ports_vector"),
+            )
+            raw_features.append(rf)
 
-        # --- Encode each node as a flat feature vector ---
-        # Layout per row:
-        #   [layer_stack_flat(15) | design_params(k_max*2) | area(1) | perimeter(1) | ports(4)]
-        ls_len = N_LAYER_STACK_ROWS * N_LAYER_STACK_COLS  # 15
+        # --- Flat feature vector per node ---
+        # Layout: [layer_stack(n_ls*2) | design_params(k_max*2) | area(1) | perim(1) | ports(5)]
+        ls_len = self.n_ls * 2
         dp_len = self.k_max * 2
-        feat_dim = ls_len + dp_len + 1 + 1 + N_PORT_TYPES  # 15+40+1+1+4 = 61
+        feat_dim = ls_len + dp_len + 2 + N_PORT_TYPES
 
         x = np.zeros((n, feat_dim), dtype=np.float32)
         for i, rf in enumerate(raw_features):
             offset = 0
-            # layer stack
-            x[i, offset : offset + ls_len] = rf["layer_stack"].flatten()
+
+            # Layer stack → pad/truncate to n_ls rows of 2 cols
+            ls_arr = np.zeros((self.n_ls, 2), dtype=np.float32)
+            for j, (thick, perm) in enumerate(rf["layer_stack"][: self.n_ls]):
+                ls_arr[j] = [thick, perm]
+            x[i, offset : offset + ls_len] = ls_arr.flatten()
             offset += ls_len
-            # design params (key_id, value) pairs, padded
+
+            # Design params (key_id, value) pairs, padded
             for j, (kid, val) in enumerate(rf["design_params"][: self.k_max]):
                 x[i, offset + j * 2] = float(kid)
                 x[i, offset + j * 2 + 1] = val
             offset += dp_len
-            # area, perimeter
+
+            # Area, perimeter
             x[i, offset] = rf["area"]
             x[i, offset + 1] = rf["perimeter"]
             offset += 2
-            # ports
+
+            # Ports
             x[i, offset : offset + N_PORT_TYPES] = rf["ports"]
 
         # --- Adjacency (symmetric, unweighted) ---
-        if n > 0:
-            row_idx = []
-            col_idx = []
+        if n > 0 and edges:
+            row_idx, col_idx = [], []
             for s, t in edges:
                 if 0 <= s < n and 0 <= t < n:
                     row_idx.extend([s, t])
@@ -351,7 +394,6 @@ class CircuitGraphBuilder:
         else:
             a = sp.csr_matrix((n, n), dtype=np.float32)
 
-        # --- Targets ---
         y = np.array(targets, dtype=np.float32) if targets is not None else None
 
         return spektral.data.Graph(x=x, a=a, y=y)
@@ -365,14 +407,13 @@ class CircuitGraphBuilder:
 class SQuADDSGraphDataset:
     """Lightweight wrapper around a list of ``spektral.data.Graph`` objects.
 
-    Provides train / validation / test splits and a Spektral-compatible
-    ``read()`` interface.
+    Provides train / validation / test splits.
 
     Args:
-        graphs: Pre-built list of ``spektral.data.Graph`` objects.
-        val_split: Fraction for validation set.
-        test_split: Fraction for test set.
-        seed: Random seed for splitting.
+        graphs: Pre-built ``Graph`` list.
+        val_split: Fraction for validation.
+        test_split: Fraction for test.
+        seed: Random seed.
     """
 
     def __init__(
@@ -393,8 +434,6 @@ class SQuADDSGraphDataset:
         self.idx_test = idx[:n_test]
         self.idx_val = idx[n_test : n_test + n_val]
         self.idx_train = idx[n_test + n_val :]
-
-    # -- read() for compatibility with Spektral loaders --
 
     def read(self) -> list:
         return self.graphs
@@ -433,25 +472,18 @@ def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict[str, An
 
 
 def _eval_geom_expr(expr: str, params: dict[str, Any]) -> float:
-    """Safely evaluate a simple geometric expression with param substitution.
-
-    Only supports basic arithmetic on known parameter names.  Falls back to 0
-    on any failure.
-    """
+    """Safely evaluate a geometric expression with param substitution."""
     if not expr or expr.strip() == "0":
         return 0.0
 
-    # Build a safe namespace of parsed parameter values
     ns: dict[str, float] = {}
     for key, val in params.items():
         parsed = _parse_value(val)
         if parsed is not None:
-            # Use the leaf name (after the last dot) as the variable name
             leaf = key.rsplit(".", 1)[-1]
             ns[leaf] = parsed
 
     try:
-        # Restrict builtins for safety
         result = eval(expr, {"__builtins__": {}}, ns)  # noqa: S307
         return float(result)
     except Exception:
