@@ -11,6 +11,7 @@ spektral = pytest.importorskip("spektral")
 from squadds.ml.graph.gnn_model import (  # noqa: E402
     GCNConvK3,
     GlobalAttentionPoolK3,
+    GraphAttentionConvK3,
     GraphForwardModel,
     UnpackNodeFeatures,
 )
@@ -26,6 +27,18 @@ class TestGCNConvK3:
         a_tf = tf.sparse.from_dense(tf.constant(a_dense))
         out = layer([x, a_tf])
         assert out.shape == (5, 32)
+
+
+class TestGraphAttentionConvK3:
+    def test_output_shape(self):
+        layer = GraphAttentionConvK3(channels=24, activation="relu")
+        x = tf.random.normal((4, 12))
+        a_dense = np.zeros((4, 4), dtype=np.float32)
+        a_dense[0, 1] = a_dense[1, 0] = 1.0
+        a_dense[1, 2] = a_dense[2, 1] = 1.0
+        a_tf = tf.sparse.from_dense(tf.constant(a_dense))
+        out = layer([x, a_tf])
+        assert out.shape == (4, 24)
 
 
 class TestGlobalAttentionPoolK3:
@@ -106,6 +119,21 @@ class TestGraphForwardModel:
             k_max=5,
             n_ls=3,
             aggregation="sum",
+        )
+        model = builder.build()
+        assert model is not None
+
+    def test_gat_message_passing_builds(self):
+        builder = GraphForwardModel(
+            vocab_size=20,
+            embed_dim=8,
+            node_latent_dim=16,
+            n_gcn_layers=2,
+            n_targets=2,
+            k_max=5,
+            n_ls=3,
+            aggregation="deepsets",
+            message_passing="gat",
         )
         model = builder.build()
         assert model is not None

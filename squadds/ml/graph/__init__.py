@@ -41,6 +41,7 @@ def __getattr__(name):
         # gnn model
         "GraphForwardModel": "squadds.ml.graph.gnn_model",
         "GCNConvK3": "squadds.ml.graph.gnn_model",
+        "GraphAttentionConvK3": "squadds.ml.graph.gnn_model",
         "GlobalAttentionPoolK3": "squadds.ml.graph.gnn_model",
         "UnpackNodeFeatures": "squadds.ml.graph.gnn_model",
         # trainer

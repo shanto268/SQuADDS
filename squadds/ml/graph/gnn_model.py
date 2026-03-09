@@ -2,8 +2,8 @@
 End-to-end Graph Neural Network forward model.
 
 ``GraphForwardModel`` wires together the sub-encoders from ``encoders.py``
-with Spektral GCN layers and a readout head to predict Hamiltonian parameters
-from a quantum-circuit graph.
+with Keras-native graph layers and a readout head to predict Hamiltonian
+parameters from a quantum-circuit graph.
 
 Architecture::
 
@@ -23,6 +23,7 @@ Architecture::
 """
 
 import keras
+import tensorflow as tf
 from keras import layers, ops
 
 from squadds.ml.graph.encoders import NodeEncoder
@@ -90,6 +91,100 @@ class GCNConvK3(layers.Layer):
                 "channels": self.channels,
                 "activation": keras.activations.serialize(self._activation),
                 "use_bias": self._use_bias,
+            }
+        )
+        return config
+
+
+# ---------------------------------------------------------------------------
+# Pure Keras 3 GraphAttention layer
+# ---------------------------------------------------------------------------
+
+
+class GraphAttentionConvK3(layers.Layer):
+    """Single-head graph attention layer compatible with disjoint batching.
+
+    This layer computes pairwise attention scores only across graph edges
+    indicated by ``a`` and then forms a weighted sum of neighboring node
+    features. It intentionally consumes the adjacency exactly as provided so
+    existing callers stay backwards-compatible.
+    """
+
+    def __init__(self, channels, activation=None, use_bias=True, negative_slope=0.2, **kwargs):
+        super().__init__(**kwargs)
+        self.channels = channels
+        self._activation = keras.activations.get(activation)
+        self._use_bias = use_bias
+        self.negative_slope = negative_slope
+
+    def build(self, input_shape):
+        in_dim = input_shape[0][-1]
+        self.kernel = self.add_weight(
+            shape=(in_dim, self.channels),
+            initializer="glorot_uniform",
+            name="kernel",
+        )
+        self.attn_kernel = self.add_weight(
+            shape=(self.channels * 2, 1),
+            initializer="glorot_uniform",
+            name="attn_kernel",
+        )
+        if self._use_bias:
+            self.bias = self.add_weight(
+                shape=(self.channels,),
+                initializer="zeros",
+                name="bias",
+            )
+
+    def call(self, inputs):
+        x, a = inputs
+        h = ops.matmul(x, self.kernel)
+
+        a_dense = tf.sparse.to_dense(a) if isinstance(a, tf.SparseTensor) else tf.convert_to_tensor(a)
+        a_mask = tf.cast(a_dense > 0, dtype=h.dtype)
+
+        # Avoid invalid softmax rows for isolated nodes while preserving the
+        # provided adjacency for connected nodes.
+        row_degree = tf.reduce_sum(a_mask, axis=-1, keepdims=True)
+        isolated_self_mask = tf.cast(tf.equal(row_degree, 0.0), dtype=h.dtype) * tf.eye(
+            tf.shape(a_mask)[0], dtype=h.dtype
+        )
+        a_mask = tf.maximum(a_mask, isolated_self_mask)
+
+        n_nodes = tf.shape(h)[0]
+        h_i = tf.tile(tf.expand_dims(h, axis=1), [1, n_nodes, 1])
+        h_j = tf.tile(tf.expand_dims(h, axis=0), [n_nodes, 1, 1])
+        pair_features = tf.concat([h_i, h_j], axis=-1)
+        pair_logits = tf.tensordot(
+            tf.nn.leaky_relu(pair_features, alpha=self.negative_slope),
+            self.attn_kernel,
+            axes=1,
+        )
+        pair_logits = tf.squeeze(pair_logits, axis=-1)
+
+        masked_logits = tf.where(
+            a_mask > 0,
+            pair_logits,
+            tf.fill(tf.shape(pair_logits), tf.cast(-1e9, dtype=h.dtype)),
+        )
+        attention = tf.nn.softmax(masked_logits, axis=-1)
+        out = ops.matmul(attention, h)
+
+        if self._use_bias:
+            out = out + self.bias
+        return self._activation(out)
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0][0], self.channels)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "channels": self.channels,
+                "activation": keras.activations.serialize(self._activation),
+                "use_bias": self._use_bias,
+                "negative_slope": self.negative_slope,
             }
         )
         return config
@@ -226,14 +321,15 @@ class GraphForwardModel:
     Args:
         vocab_size: Size of parameter-key vocabulary (including PAD).
         embed_dim: Key embedding dimensionality.
-        node_latent_dim: Latent dimension *d* for E_static / GCN.
-        n_gcn_layers: Number of GCNConv layers.
+        node_latent_dim: Latent dimension *d* for E_static / message passing.
+        n_gcn_layers: Number of message-passing layers.
         n_targets: Number of Hamiltonian targets to predict.
         k_max: Max design-parameter slots per node.
         n_ls: Number of layer-stack rows (padded).
         readout_dim: Hidden dim of the readout MLP.
         dropout_rate: Dropout rate applied after GCN layers.
         aggregation: ``"deepsets"`` or ``"sum"`` for the GeometricEncoder.
+        message_passing: ``"gcn"`` or ``"gat"``.
     """
 
     def __init__(
@@ -248,6 +344,7 @@ class GraphForwardModel:
         readout_dim: int = 64,
         dropout_rate: float = 0.1,
         aggregation: str = "deepsets",
+        message_passing: str = "gcn",
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -259,6 +356,7 @@ class GraphForwardModel:
         self.readout_dim = readout_dim
         self.dropout_rate = dropout_rate
         self.aggregation = aggregation
+        self.message_passing = message_passing
 
     def build(self) -> keras.Model:
         """Construct and return a ``keras.Model``.
@@ -295,13 +393,22 @@ class GraphForwardModel:
         )
         h = node_encoder(layer_stack, key_ids, values, area, perimeter, ports)
 
-        # --- GCN message-passing layers with residuals ---
+        if self.message_passing == "gcn":
+            message_passing_layer = GCNConvK3
+            message_passing_name = "gcn"
+        elif self.message_passing == "gat":
+            message_passing_layer = GraphAttentionConvK3
+            message_passing_name = "gat"
+        else:
+            raise ValueError(f"Unsupported message_passing mode: {self.message_passing}")
+
+        # --- Message-passing layers with residuals ---
         for layer_idx in range(self.n_gcn_layers):
             h_prev = h
-            h = GCNConvK3(
+            h = message_passing_layer(
                 self.node_latent_dim,
                 activation="relu",
-                name=f"gcn_{layer_idx}",
+                name=f"{message_passing_name}_{layer_idx}",
             )([h, a_in])
             h = layers.Dropout(self.dropout_rate)(h)
             h = layers.Add()([h, h_prev])  # residual (using Keras layer, not raw +)

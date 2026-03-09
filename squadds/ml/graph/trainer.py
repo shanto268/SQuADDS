@@ -117,6 +117,7 @@ class GraphTrainer:
             "readout_dim": model_builder.readout_dim,
             "dropout_rate": model_builder.dropout_rate,
             "aggregation": model_builder.aggregation,
+            "message_passing": model_builder.message_passing,
         }
 
         # Enable mixed precision for GPU acceleration
@@ -334,6 +335,7 @@ class GraphTrainer:
         from squadds.ml.graph.gnn_model import (
             GCNConvK3,
             GlobalAttentionPoolK3,
+            GraphAttentionConvK3,
             UnpackNodeFeatures,
         )
 
@@ -356,6 +358,7 @@ class GraphTrainer:
             "PortEncoder": PortEncoder,
             "NodeEncoder": NodeEncoder,
             "GCNConvK3": GCNConvK3,
+            "GraphAttentionConvK3": GraphAttentionConvK3,
             "GlobalAttentionPoolK3": GlobalAttentionPoolK3,
             "UnpackNodeFeatures": UnpackNodeFeatures,
         }
