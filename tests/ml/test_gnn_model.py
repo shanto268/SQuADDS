@@ -8,7 +8,48 @@ import pytest
 tf = pytest.importorskip("tensorflow")
 spektral = pytest.importorskip("spektral")
 
-from squadds.ml.graph.gnn_model import GraphForwardModel  # noqa: E402
+from squadds.ml.graph.gnn_model import (  # noqa: E402
+    GCNConvK3,
+    GlobalAttentionPoolK3,
+    GraphForwardModel,
+    UnpackNodeFeatures,
+)
+
+
+class TestGCNConvK3:
+    def test_output_shape(self):
+        layer = GCNConvK3(channels=32, activation="relu")
+        x = tf.random.normal((5, 16))
+        a_dense = np.zeros((5, 5), dtype=np.float32)
+        a_dense[0, 1] = a_dense[1, 0] = 1.0
+        a_dense[2, 3] = a_dense[3, 2] = 1.0
+        a_tf = tf.sparse.from_dense(tf.constant(a_dense))
+        out = layer([x, a_tf])
+        assert out.shape == (5, 32)
+
+
+class TestGlobalAttentionPoolK3:
+    def test_output_shape(self):
+        layer = GlobalAttentionPoolK3(channels=32)
+        h = tf.random.normal((5, 16))
+        batch_idx = tf.constant([0, 0, 1, 1, 1], dtype=tf.int32)
+        out = layer([h, batch_idx])
+        assert out.shape == (2, 32)
+
+
+class TestUnpackNodeFeatures:
+    def test_shapes(self):
+        n_ls, k_max = 5, 10
+        feat_dim = n_ls * 2 + k_max * 2 + 2 + 5
+        x = tf.random.normal((3, feat_dim))
+        layer = UnpackNodeFeatures(n_ls=n_ls, k_max=k_max)
+        ls, kids, vals, area, peri, ports = layer(x)
+        assert ls.shape == (3, n_ls, 2)
+        assert kids.shape == (3, k_max)
+        assert vals.shape == (3, k_max)
+        assert area.shape == (3, 1)
+        assert peri.shape == (3, 1)
+        assert ports.shape == (3, 5)
 
 
 class TestGraphForwardModel:
@@ -21,41 +62,50 @@ class TestGraphForwardModel:
             n_gcn_layers=2,
             n_targets=3,
             k_max=5,
+            n_ls=5,
             readout_dim=16,
             dropout_rate=0.0,
+            aggregation="deepsets",
         )
 
     def test_build_returns_keras_model(self, builder):
+        import keras
+
         model = builder.build()
-        assert isinstance(model, tf.keras.Model)
+        assert isinstance(model, keras.Model)
 
     def test_output_shape_with_disjoint_batch(self, builder):
-        """Simulate a disjoint-mode mini-batch and verify output shape."""
-        from squadds.ml.graph.featurizer import N_LAYER_STACK_COLS, N_LAYER_STACK_ROWS, N_PORT_TYPES
+        from squadds.ml.graph.gnn_model import N_PORT_TYPES
 
         model = builder.build()
+        n_ls = builder.n_ls
         k_max = builder.k_max
-        feat_dim = N_LAYER_STACK_ROWS * N_LAYER_STACK_COLS + k_max * 2 + 2 + N_PORT_TYPES
+        feat_dim = n_ls * 2 + k_max * 2 + 2 + N_PORT_TYPES
 
-        # Two graphs: graph-0 has 2 nodes, graph-1 has 3 nodes
         total_nodes = 5
         x = np.random.randn(total_nodes, feat_dim).astype(np.float32)
 
-        # Block-diagonal adjacency (dense → sparse)
         a_dense = np.zeros((total_nodes, total_nodes), dtype=np.float32)
-        # graph-0 edges: 0-1
         a_dense[0, 1] = a_dense[1, 0] = 1.0
-        # graph-1 edges: 2-3, 3-4
         a_dense[2, 3] = a_dense[3, 2] = 1.0
         a_dense[3, 4] = a_dense[4, 3] = 1.0
 
-        import scipy.sparse as sp
-
-        sp.csr_matrix(a_dense)
         a_tf = tf.sparse.from_dense(tf.constant(a_dense))
-
-        # Graph membership
         i = np.array([0, 0, 1, 1, 1], dtype=np.int32)
 
         out = model([tf.constant(x), a_tf, tf.constant(i)], training=False)
         assert out.shape == (2, 3)  # 2 graphs, 3 targets
+
+    def test_sum_aggregation_builds(self):
+        builder = GraphForwardModel(
+            vocab_size=20,
+            embed_dim=8,
+            node_latent_dim=16,
+            n_gcn_layers=1,
+            n_targets=2,
+            k_max=5,
+            n_ls=3,
+            aggregation="sum",
+        )
+        model = builder.build()
+        assert model is not None

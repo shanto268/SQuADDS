@@ -25,7 +25,6 @@ Refer to [contribution guidelines](CONTRIBUTING.md) for more information on how 
 
 ## Core:
 
-
 - **Create a simple API for users to contribute experimental data to SQuADDS_DB**
 - Handle cases where the user does not wish to specify a `resonator_type`
 - Improve system design for both the SQuADDS package and SQuADDS_DB
@@ -81,7 +80,6 @@ Refer to [contribution guidelines](CONTRIBUTING.md) for more information on how 
 - Incorporate [SCILLA](https://github.com/aspuru-guzik-group/scilla?tab=readme-ov-file) and/or its applications
 - Add interpolation of individual components (both API and UI)
 
-
 ## Boring but Necessary:
 
 - say that coupling is capacitive and handle inductive logic
@@ -104,3 +102,11 @@ Refer to [contribution guidelines](CONTRIBUTING.md) for more information on how 
 - Setup a Model Context Protocol server for SQuADDS
 - Implement LLM-based queries for SQuADDS using [pandas-ai](https://docs.pandas-ai.com/intro) (support for OpenAI and local LLaMA models)
 - Add visual components to the SQuADDS UI
+
+That makes total sense, especially since your original `Tutorial-8` was already built using Keras and TensorFlow (`Sequential`, `Dense`, `Adam`, etc.). Transitioning the new graph architecture into TensorFlow is completely doable and keeps your codebase consistent.
+
+Instead of PyTorch Geometric, the agent will need to use **TensorFlow GNN (TF-GNN)** or **Spektral** (a library specifically built for graph deep learning on Keras).
+
+Here is the revised, comprehensive prompt adjusted strictly for the TensorFlow/Keras ecosystem.
+
+---

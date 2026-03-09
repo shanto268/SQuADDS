@@ -95,7 +95,6 @@ class TestBuildVocab:
         assert "alpha" in vocab
         assert "beta" in vocab
         assert "gamma" in vocab
-        # alphabetical after PAD
         assert vocab["alpha"] == 1
         assert vocab["beta"] == 2
         assert vocab["gamma"] == 3
@@ -106,6 +105,19 @@ class TestBuildVocab:
         with open(save_path) as f:
             loaded = json.load(f)
         assert loaded == {k: v for k, v in vocab.items()}
+
+    def test_extra_jsons(self, tmp_json_dir, tmp_path):
+        extra_json = tmp_path / "Extra.json"
+        extra_json.write_text(
+            json.dumps(
+                {
+                    "component_name": "Extra",
+                    "design_parameters": [{"parameter_name": "delta"}],
+                }
+            )
+        )
+        vocab = build_vocab(json_dir=tmp_json_dir, extra_jsons=[str(extra_json)])
+        assert "delta" in vocab
 
 
 # ---------------------------------------------------------------------------
@@ -120,16 +132,35 @@ def simple_vocab():
 
 class TestComponentFeaturizer:
     def test_featurize_shape(self, simple_vocab, tmp_path):
-        # No JSON dir → still works (area/perimeter = 0, ports = 0)
         feat = ComponentFeaturizer(vocab=simple_vocab, json_dir=tmp_path)
         result = feat.featurize(
             "TransmonCross",
             {"cross_width": "20um", "cross_length": "200um", "cross_gap": "20um"},
         )
-        assert result["layer_stack"].shape == (5, 3)
+        # layer_stack is now a list of tuples, not an ndarray
+        assert isinstance(result["layer_stack"], list)
         assert isinstance(result["design_params"], list)
         assert len(result["design_params"]) == 3
-        assert result["ports"].shape == (4,)
+        assert result["ports"].shape == (5,)  # 5-element port vector
+
+    def test_custom_layer_stack(self, simple_vocab, tmp_path):
+        feat = ComponentFeaturizer(vocab=simple_vocab, json_dir=tmp_path)
+        custom_ls = [(500.0, 11.45), (0.1, 0.0), (0.0, 1.0)]
+        result = feat.featurize(
+            "X",
+            {"cross_width": "10um"},
+            layer_stack=custom_ls,
+        )
+        assert result["layer_stack"] == custom_ls
+
+    def test_custom_ports_vector(self, simple_vocab, tmp_path):
+        feat = ComponentFeaturizer(vocab=simple_vocab, json_dir=tmp_path)
+        result = feat.featurize(
+            "X",
+            {"cross_width": "10um"},
+            ports_vector=[1, 2, 0, 0, 1],
+        )
+        np.testing.assert_array_equal(result["ports"], [1, 2, 0, 0, 1])
 
     def test_key_ids_in_vocab(self, simple_vocab, tmp_path):
         feat = ComponentFeaturizer(vocab=simple_vocab, json_dir=tmp_path)
@@ -145,7 +176,7 @@ class TestComponentFeaturizer:
 
 
 # ---------------------------------------------------------------------------
-# CircuitGraphBuilder
+# CircuitGraphBuilder  —  new dict-based component format
 # ---------------------------------------------------------------------------
 
 
@@ -154,11 +185,11 @@ class TestCircuitGraphBuilder:
         pytest.importorskip("spektral")
         builder = CircuitGraphBuilder(vocab=simple_vocab, k_max=5, json_dir=tmp_path)
         g = builder.build(
-            components=[("TransmonCross", {"cross_width": "20um"})],
+            components=[{"type": "TransmonCross", "design_overrides": {"cross_width": "20um"}}],
             edges=[],
             targets=[5.0, -300.0],
         )
-        assert g.x.shape[0] == 1  # 1 node
+        assert g.x.shape[0] == 1
         assert g.a.shape == (1, 1)
         np.testing.assert_array_equal(g.y, np.array([5.0, -300.0], dtype=np.float32))
 
@@ -167,16 +198,33 @@ class TestCircuitGraphBuilder:
         builder = CircuitGraphBuilder(vocab=simple_vocab, k_max=5, json_dir=tmp_path)
         g = builder.build(
             components=[
-                ("TransmonCross", {"cross_width": "20um"}),
-                ("CavityClaw", {"cross_length": "100um"}),
+                {"type": "TransmonCross", "design_overrides": {"cross_width": "20um"}},
+                {"type": "CavityClaw", "design_overrides": {"cross_length": "100um"}},
             ],
             edges=[(0, 1)],
         )
         assert g.x.shape[0] == 2
-        # adjacency should be symmetric
         a_dense = g.a.toarray()
         assert a_dense[0, 1] == 1.0
         assert a_dense[1, 0] == 1.0
+
+    def test_custom_ports_and_layer_stack(self, simple_vocab, tmp_path):
+        pytest.importorskip("spektral")
+        builder = CircuitGraphBuilder(vocab=simple_vocab, k_max=5, n_ls=3, json_dir=tmp_path)
+        g = builder.build(
+            components=[
+                {
+                    "type": "X",
+                    "design_overrides": {"cross_width": "10um"},
+                    "layer_stack": [(350.0, 11.45), (0.25, 0.0)],
+                    "ports_vector": [1, 0, 2, 0, 1],
+                },
+            ],
+            edges=[],
+            targets=[1.0],
+        )
+        # n_ls=3, so feature starts with 3*2=6 floats for layer stack
+        assert g.x.shape[1] == 3 * 2 + 5 * 2 + 2 + 5  # 6+10+2+5=23
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +238,7 @@ class TestSQuADDSGraphDataset:
         builder = CircuitGraphBuilder(vocab=simple_vocab, k_max=5, json_dir=tmp_path)
         graphs = [
             builder.build(
-                components=[("X", {"cross_width": f"{i}um"})],
+                components=[{"type": "X", "design_overrides": {"cross_width": f"{i}um"}}],
                 edges=[],
                 targets=[float(i)],
             )

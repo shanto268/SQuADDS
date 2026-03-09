@@ -17,7 +17,7 @@ from squadds.ml.graph.trainer import GraphTrainer  # noqa: E402
 def tiny_graphs(tmp_path):
     """Create a small set of synthetic graphs for training tests."""
     vocab = {PAD_TOKEN: 0, "p1": 1, "p2": 2}
-    builder = CircuitGraphBuilder(vocab=vocab, k_max=5, json_dir=tmp_path)
+    builder = CircuitGraphBuilder(vocab=vocab, k_max=5, n_ls=3, json_dir=tmp_path)
     rng = np.random.RandomState(42)
     graphs = []
     for _ in range(30):
@@ -25,11 +25,11 @@ def tiny_graphs(tmp_path):
         v2 = rng.uniform(5, 50)
         g = builder.build(
             components=[
-                ("A", {"p1": f"{v1}um", "p2": f"{v2}um"}),
-                ("B", {"p1": f"{v2}um"}),
+                {"type": "A", "design_overrides": {"p1": f"{v1}um", "p2": f"{v2}um"}},
+                {"type": "B", "design_overrides": {"p1": f"{v2}um"}},
             ],
             edges=[(0, 1)],
-            targets=[v1 + v2, v1 * v2 / 100],  # simple analytical targets
+            targets=[v1 + v2, v1 * v2 / 100],
         )
         graphs.append(g)
     return graphs
@@ -44,6 +44,7 @@ class TestGraphTrainer:
             n_gcn_layers=1,
             n_targets=2,
             k_max=5,
+            n_ls=3,
             readout_dim=8,
             dropout_rate=0.0,
         )
@@ -66,6 +67,7 @@ class TestGraphTrainer:
             n_gcn_layers=1,
             n_targets=2,
             k_max=5,
+            n_ls=3,
             readout_dim=8,
             dropout_rate=0.0,
         )
@@ -87,6 +89,7 @@ class TestGraphTrainer:
             n_gcn_layers=1,
             n_targets=2,
             k_max=5,
+            n_ls=3,
             readout_dim=8,
             dropout_rate=0.0,
         )

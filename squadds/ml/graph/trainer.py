@@ -38,6 +38,41 @@ class _MiniDataset:
     def __getitem__(self, idx):
         return self.graphs[idx]
 
+    def __setitem__(self, idx, value):
+        self.graphs[idx] = value
+
+    @property
+    def signature(self):
+        """Compute TF signature required by Spektral's DisjointLoader."""
+        import tensorflow as tf
+        from spektral.data.utils import get_spec
+
+        if len(self.graphs) == 0:
+            return None
+        sig = {}
+        g = self.graphs[0]
+        if g.x is not None:
+            sig["x"] = {
+                "spec": get_spec(g.x),
+                "shape": (None, self.n_node_features),
+                "dtype": tf.as_dtype(g.x.dtype),
+            }
+        if g.a is not None:
+            sig["a"] = {
+                "spec": get_spec(g.a),
+                "shape": (None, None),
+                "dtype": tf.as_dtype(g.a.dtype),
+            }
+        if g.y is not None:
+            import numpy as np
+
+            sig["y"] = {
+                "spec": get_spec(g.y),
+                "shape": (self.n_labels,),
+                "dtype": tf.as_dtype(np.array(g.y).dtype),
+            }
+        return sig
+
 
 # ---------------------------------------------------------------------------
 # GraphTrainer
