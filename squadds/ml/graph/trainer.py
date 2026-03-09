@@ -13,8 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import keras
 import numpy as np
-import tensorflow as tf
 from spektral.data import DisjointLoader
 
 from squadds.ml.graph.gnn_model import GraphForwardModel
@@ -29,7 +29,6 @@ class _MiniDataset:
 
     def __init__(self, graphs):
         self.graphs = list(graphs)
-        # DisjointLoader looks for these attributes
         self.n_node_features = graphs[0].x.shape[-1] if graphs else 0
         self.n_labels = graphs[0].y.shape[-1] if (graphs and graphs[0].y is not None) else 0
 
@@ -53,6 +52,8 @@ class GraphTrainer:
         learning_rate: Initial learning rate for Adam.
         target_names: Optional list of human-readable target names
             (e.g. ``["f_q", "alpha", "f_r", "kappa", "g"]``).
+        use_mixed_precision: If ``True``, enable FP16 mixed-precision
+            training for ~2-3× speedup on modern GPUs.
     """
 
     def __init__(
@@ -60,11 +61,13 @@ class GraphTrainer:
         model_builder: GraphForwardModel,
         learning_rate: float = 1e-3,
         target_names: list[str] | None = None,
+        use_mixed_precision: bool = False,
     ):
         self.model_builder = model_builder
         self.learning_rate = learning_rate
         self.target_names = target_names
-        self.model: tf.keras.Model | None = None
+        self.use_mixed_precision = use_mixed_precision
+        self.model: keras.Model | None = None
         self.history: dict | None = None
         self._config: dict[str, Any] = {
             "vocab_size": model_builder.vocab_size,
@@ -73,9 +76,15 @@ class GraphTrainer:
             "n_gcn_layers": model_builder.n_gcn_layers,
             "n_targets": model_builder.n_targets,
             "k_max": model_builder.k_max,
+            "n_ls": model_builder.n_ls,
             "readout_dim": model_builder.readout_dim,
             "dropout_rate": model_builder.dropout_rate,
+            "aggregation": model_builder.aggregation,
         }
+
+        # Enable mixed precision for GPU acceleration
+        if use_mixed_precision:
+            keras.mixed_precision.set_global_policy("mixed_float16")
 
     # ------------------------------------------------------------------ #
     # Training
@@ -103,19 +112,17 @@ class GraphTrainer:
         Returns:
             Keras ``History.history`` dictionary.
         """
-        # Build model
         self.model = self.model_builder.build()
         self.model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
+            optimizer=keras.optimizers.Adam(learning_rate=self.learning_rate),
             loss="mse",
             metrics=["mae"],
         )
 
-        # Loaders
         train_loader = DisjointLoader(_MiniDataset(train_graphs), batch_size=batch_size, shuffle=True)
 
-        callbacks: list[tf.keras.callbacks.Callback] = [
-            tf.keras.callbacks.ReduceLROnPlateau(
+        callbacks: list[keras.callbacks.Callback] = [
+            keras.callbacks.ReduceLROnPlateau(
                 monitor="loss", factor=0.5, patience=max(3, patience // 3), verbose=verbose
             ),
         ]
@@ -124,7 +131,7 @@ class GraphTrainer:
         if val_graphs:
             val_loader = DisjointLoader(_MiniDataset(val_graphs), batch_size=batch_size, shuffle=False)
             callbacks.append(
-                tf.keras.callbacks.EarlyStopping(
+                keras.callbacks.EarlyStopping(
                     monitor="val_loss",
                     patience=patience,
                     restore_best_weights=True,
@@ -190,8 +197,8 @@ class GraphTrainer:
         for batch in loader:
             inputs, targets = batch
             preds = self.model(inputs, training=False)
-            y_true_parts.append(targets.numpy())
-            y_pred_parts.append(preds.numpy())
+            y_true_parts.append(np.asarray(targets))
+            y_pred_parts.append(np.asarray(preds))
         return np.concatenate(y_true_parts, axis=0), np.concatenate(y_pred_parts, axis=0)
 
     # ------------------------------------------------------------------ #
@@ -227,13 +234,16 @@ class GraphTrainer:
         Returns:
             A ``GraphTrainer`` with the model weights restored.
         """
-        from spektral.layers import GCNConv, GlobalAttentionPool  # noqa: F811
-
         from squadds.ml.graph.encoders import (
             GeometricEncoder,
             LayerStackEncoder,
             NodeEncoder,
             PortEncoder,
+        )
+        from squadds.ml.graph.gnn_model import (
+            GCNConvK3,
+            GlobalAttentionPoolK3,
+            UnpackNodeFeatures,
         )
 
         path = Path(path)
@@ -248,10 +258,11 @@ class GraphTrainer:
             "GeometricEncoder": GeometricEncoder,
             "PortEncoder": PortEncoder,
             "NodeEncoder": NodeEncoder,
-            "GCNConv": GCNConv,
-            "GlobalAttentionPool": GlobalAttentionPool,
+            "GCNConvK3": GCNConvK3,
+            "GlobalAttentionPoolK3": GlobalAttentionPoolK3,
+            "UnpackNodeFeatures": UnpackNodeFeatures,
         }
-        trainer.model = tf.keras.models.load_model(path / "model.keras", custom_objects=custom_objects)
+        trainer.model = keras.models.load_model(path / "model.keras", custom_objects=custom_objects)
         return trainer
 
 
@@ -303,7 +314,6 @@ def plot_predictions(
         ax.set_xlabel("True")
         ax.set_ylabel("Predicted")
 
-    # Hide unused axes
     for idx in range(n_targets, nrows * ncols):
         axes[idx // ncols, idx % ncols].set_visible(False)
 
