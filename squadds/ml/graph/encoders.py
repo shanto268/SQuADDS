@@ -98,6 +98,8 @@ class GeometricEncoder(layers.Layer):
         out_dim: Final output dimensionality.
         k_max: Maximum number of design parameters (padding length).
         aggregation: ``"deepsets"`` or ``"sum"``.
+        geometry_aux_loss_weight: Weight of the auxiliary geometry MSE loss.
+        geometry_aux_hidden_dim: Hidden width for the geometry prediction head.
     """
 
     def __init__(
@@ -109,6 +111,8 @@ class GeometricEncoder(layers.Layer):
         out_dim: int = 64,
         k_max: int = 20,
         aggregation: str = "deepsets",
+        geometry_aux_loss_weight: float = 0.0,
+        geometry_aux_hidden_dim: int = 32,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -116,6 +120,8 @@ class GeometricEncoder(layers.Layer):
         self.embed_dim = embed_dim
         self.k_max = k_max
         self.aggregation = aggregation
+        self.geometry_aux_loss_weight = geometry_aux_loss_weight
+        self.geometry_aux_hidden_dim = geometry_aux_hidden_dim
 
         self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embed_dim, mask_zero=False)
 
@@ -128,6 +134,16 @@ class GeometricEncoder(layers.Layer):
 
         self.concat = layers.Concatenate()
         self.out_dense = layers.Dense(out_dim, activation="relu")
+        if self.geometry_aux_loss_weight > 0.0:
+            self.geometry_aux_hidden = layers.Dense(geometry_aux_hidden_dim, activation="relu")
+            self.geometry_aux_out = layers.Dense(2, name="geometry_aux_prediction")
+        else:
+            self.geometry_aux_hidden = None
+            self.geometry_aux_out = None
+
+        self.last_mask = None
+        self.last_rho_out = None
+        self.last_geometry_prediction = None
 
     def call(self, key_ids, values, area, perimeter):
         """Forward pass.
@@ -151,6 +167,7 @@ class GeometricEncoder(layers.Layer):
         # Mask out PAD entries (key_id == 0)
         mask = ops.cast(ops.not_equal(key_ids, 0), dtype="float32")  # (batch, k_max)
         mask = ops.expand_dims(mask, axis=-1)  # (batch, k_max, 1)
+        self.last_mask = mask
 
         if self.aggregation == "deepsets":
             phi_out = self.phi(scaled) * mask  # (batch, k_max, phi_dim)
@@ -159,6 +176,16 @@ class GeometricEncoder(layers.Layer):
         else:
             # Simple SUM aggregation
             rho_out = ops.sum(scaled * mask, axis=1)  # (batch, embed_dim)
+
+        self.last_rho_out = rho_out
+        if self.geometry_aux_out is not None and self.geometry_aux_hidden is not None:
+            geometry_target = self.concat([area, perimeter])
+            geometry_prediction = self.geometry_aux_out(self.geometry_aux_hidden(rho_out))
+            self.last_geometry_prediction = geometry_prediction
+            geometry_mse = ops.mean(ops.square(geometry_prediction - geometry_target))
+            self.add_loss(self.geometry_aux_loss_weight * geometry_mse)
+        else:
+            self.last_geometry_prediction = None
 
         combined = self.concat([rho_out, area, perimeter])
         return self.out_dense(combined)
@@ -171,6 +198,8 @@ class GeometricEncoder(layers.Layer):
             "out_dim": self.out_dense.units,
             "k_max": self.k_max,
             "aggregation": self.aggregation,
+            "geometry_aux_loss_weight": self.geometry_aux_loss_weight,
+            "geometry_aux_hidden_dim": self.geometry_aux_hidden_dim,
         }
         if self.phi is not None:
             cfg["phi_dim"] = self.phi.units
@@ -251,6 +280,8 @@ class NodeEncoder(layers.Layer):
         geo_out: GeometricEncoder output dim.
         port_hidden: PortEncoder hidden dim.
         port_out: PortEncoder output dim.
+        geometry_aux_loss_weight: Weight of the auxiliary geometry MSE loss.
+        geometry_aux_hidden_dim: Hidden width for the geometry prediction head.
     """
 
     def __init__(
@@ -267,6 +298,8 @@ class NodeEncoder(layers.Layer):
         geo_out: int = 64,
         port_hidden: int = 32,
         port_out: int = 32,
+        geometry_aux_loss_weight: float = 0.0,
+        geometry_aux_hidden_dim: int = 32,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -275,6 +308,8 @@ class NodeEncoder(layers.Layer):
         self._aggregation = aggregation
         self._vocab_size = vocab_size
         self._embed_dim = embed_dim
+        self._geometry_aux_loss_weight = geometry_aux_loss_weight
+        self._geometry_aux_hidden_dim = geometry_aux_hidden_dim
 
         self.ls_encoder = LayerStackEncoder(filters=ls_filters, out_dim=ls_out)
         self.geo_encoder = GeometricEncoder(
@@ -285,6 +320,8 @@ class NodeEncoder(layers.Layer):
             out_dim=geo_out,
             k_max=k_max,
             aggregation=aggregation,
+            geometry_aux_loss_weight=geometry_aux_loss_weight,
+            geometry_aux_hidden_dim=geometry_aux_hidden_dim,
         )
         self.port_encoder = PortEncoder(hidden_dim=port_hidden, out_dim=port_out)
 
@@ -323,6 +360,8 @@ class NodeEncoder(layers.Layer):
                 "k_max": self.k_max,
                 "latent_dim": self.latent_dim,
                 "aggregation": self._aggregation,
+                "geometry_aux_loss_weight": self._geometry_aux_loss_weight,
+                "geometry_aux_hidden_dim": self._geometry_aux_hidden_dim,
             }
         )
         return config

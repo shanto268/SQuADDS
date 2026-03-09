@@ -48,6 +48,9 @@ def __getattr__(name):
         "UnpackNodeFeatures": "squadds.ml.graph.gnn_model",
         # trainer
         "GraphTrainer": "squadds.ml.graph.trainer",
+        "pairwise_cosine_similarity": "squadds.ml.graph.trainer",
+        "pairwise_euclidean_distance": "squadds.ml.graph.trainer",
+        "project_embeddings": "squadds.ml.graph.trainer",
         "plot_predictions": "squadds.ml.graph.trainer",
     }
     if name in _lazy:

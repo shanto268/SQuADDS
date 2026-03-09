@@ -366,6 +366,8 @@ class GraphForwardModel:
         dropout_rate: Dropout rate applied after message-passing layers.
         aggregation: ``"deepsets"`` or ``"sum"`` for the GeometricEncoder.
         message_passing: ``"gcn"`` or ``"gat"``.
+        geometry_aux_loss_weight: Weight of the auxiliary geometry loss.
+        geometry_aux_hidden_dim: Hidden width for the geometry prediction head.
     """
 
     def __init__(
@@ -381,6 +383,8 @@ class GraphForwardModel:
         dropout_rate: float = 0.1,
         aggregation: str = "deepsets",
         message_passing: str = "gcn",
+        geometry_aux_loss_weight: float = 0.0,
+        geometry_aux_hidden_dim: int = 32,
     ):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -393,6 +397,8 @@ class GraphForwardModel:
         self.dropout_rate = dropout_rate
         self.aggregation = aggregation
         self.message_passing = message_passing
+        self.geometry_aux_loss_weight = geometry_aux_loss_weight
+        self.geometry_aux_hidden_dim = geometry_aux_hidden_dim
 
     def build(self) -> keras.Model:
         """Construct and return a ``keras.Model``.
@@ -425,9 +431,12 @@ class GraphForwardModel:
             k_max=self.k_max,
             latent_dim=self.node_latent_dim,
             aggregation=self.aggregation,
+            geometry_aux_loss_weight=self.geometry_aux_loss_weight,
+            geometry_aux_hidden_dim=self.geometry_aux_hidden_dim,
             name="node_encoder",
         )
         h = node_encoder(layer_stack, key_ids, values, area, perimeter, ports)
+        h = layers.Activation("linear", name="node_static_embeddings")(h)
 
         if self.message_passing == "gcn":
             message_passing_layer = GCNConvK3
@@ -450,9 +459,11 @@ class GraphForwardModel:
             )([h, adjacency])
             h = layers.Dropout(self.dropout_rate)(h)
             h = layers.Add()([h, h_prev])  # residual (using Keras layer, not raw +)
+        h = layers.Activation("linear", name="node_context_embeddings")(h)
 
         # --- Graph-level pooling ---
         h = GlobalAttentionPoolK3(self.node_latent_dim, name="global_pool")([h, i_in])
+        h = layers.Activation("linear", name="graph_embeddings")(h)
         # --- Readout MLP ---
         h = layers.Dense(self.readout_dim, activation="relu", name="readout_1")(h)
         h = layers.Dropout(self.dropout_rate)(h)

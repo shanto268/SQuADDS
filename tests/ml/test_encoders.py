@@ -75,6 +75,22 @@ class TestGeometricEncoder:
 
         assert not np.allclose(out_all_pad.numpy(), out_one_key.numpy())
 
+    def test_geometry_auxiliary_loss_is_added(self):
+        enc = GeometricEncoder(
+            vocab_size=50,
+            embed_dim=8,
+            out_dim=16,
+            k_max=5,
+            geometry_aux_loss_weight=0.25,
+        )
+        key_ids = tf.constant([[1, 2, 0, 0, 0]], dtype=tf.int32)
+        values = tf.constant([[10.0, 20.0, 0.0, 0.0, 0.0]], dtype=tf.float32)
+        area = tf.constant([[500.0]], dtype=tf.float32)
+        perimeter = tf.constant([[50.0]], dtype=tf.float32)
+        _ = enc(key_ids, values, area, perimeter)
+        assert enc.losses
+        assert enc.last_geometry_prediction is not None
+
 
 # ---------------------------------------------------------------------------
 # PortEncoder  —  input dim is now 5

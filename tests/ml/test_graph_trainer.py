@@ -10,7 +10,12 @@ spektral = pytest.importorskip("spektral")
 
 from squadds.ml.graph.featurizer import PAD_TOKEN, CircuitGraphBuilder  # noqa: E402
 from squadds.ml.graph.gnn_model import GraphForwardModel  # noqa: E402
-from squadds.ml.graph.trainer import GraphTrainer  # noqa: E402
+from squadds.ml.graph.trainer import (  # noqa: E402
+    GraphTrainer,
+    pairwise_cosine_similarity,
+    pairwise_euclidean_distance,
+    project_embeddings,
+)
 
 
 @pytest.fixture()
@@ -148,3 +153,40 @@ class TestGraphTrainer:
         assert (save_dir / "model.keras").exists()
         assert (save_dir / "config.json").exists()
         assert (save_dir / "history.json").exists()
+
+    def test_embedding_utilities(self, tiny_graphs, tmp_path):
+        model_builder = GraphForwardModel(
+            vocab_size=10,
+            embed_dim=4,
+            node_latent_dim=16,
+            n_gcn_layers=1,
+            n_targets=2,
+            k_max=5,
+            n_ls=3,
+            readout_dim=8,
+            dropout_rate=0.0,
+            geometry_aux_loss_weight=0.1,
+        )
+        trainer = GraphTrainer(model_builder, learning_rate=1e-3, target_names=["sum", "prod"])
+        trainer.train(
+            train_graphs=tiny_graphs[:20],
+            epochs=1,
+            batch_size=8,
+            verbose=0,
+            save_dir=tmp_path / "embedding_runs",
+        )
+
+        graph_embeddings = trainer.embed_graphs(tiny_graphs[20:])
+        node_embeddings, node_graph_idx = trainer.embed_nodes(tiny_graphs[20:], embedding_level="context")
+
+        assert graph_embeddings.shape[0] == len(tiny_graphs[20:])
+        assert node_embeddings.shape[0] == len(tiny_graphs[20:]) * 2
+        assert node_graph_idx.shape[0] == node_embeddings.shape[0]
+
+        cosine = pairwise_cosine_similarity(graph_embeddings)
+        euclidean = pairwise_euclidean_distance(graph_embeddings)
+        projection = project_embeddings(graph_embeddings, method="pca")
+
+        assert cosine.shape[0] == cosine.shape[1] == len(tiny_graphs[20:])
+        assert euclidean.shape == cosine.shape
+        assert projection.shape == (len(tiny_graphs[20:]), 2)

@@ -118,6 +118,8 @@ class GraphTrainer:
             "dropout_rate": model_builder.dropout_rate,
             "aggregation": model_builder.aggregation,
             "message_passing": model_builder.message_passing,
+            "geometry_aux_loss_weight": model_builder.geometry_aux_loss_weight,
+            "geometry_aux_hidden_dim": model_builder.geometry_aux_hidden_dim,
         }
 
         # Enable mixed precision for GPU acceleration
@@ -257,6 +259,25 @@ class GraphTrainer:
         _, y_pred = self._collect_predictions(graphs, batch_size)
         return y_pred
 
+    def embed_graphs(self, graphs: list, batch_size: int = 64) -> np.ndarray:
+        """Return graph-level embeddings after attention pooling."""
+        return self._collect_layer_outputs(graphs, batch_size, layer_name="graph_embeddings")
+
+    def embed_nodes(
+        self,
+        graphs: list,
+        batch_size: int = 64,
+        embedding_level: str = "static",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return node embeddings and graph membership indices."""
+        if embedding_level == "static":
+            layer_name = "node_static_embeddings"
+        elif embedding_level == "context":
+            layer_name = "node_context_embeddings"
+        else:
+            raise ValueError(f"Unsupported embedding_level: {embedding_level}")
+        return self._collect_node_embeddings(graphs, batch_size, layer_name=layer_name)
+
     def _collect_predictions(self, graphs, batch_size):
         loader = DisjointLoader(_MiniDataset(graphs), batch_size=batch_size, shuffle=False, epochs=1)
         y_true_parts, y_pred_parts = [], []
@@ -266,6 +287,37 @@ class GraphTrainer:
             y_true_parts.append(np.asarray(targets))
             y_pred_parts.append(np.asarray(preds))
         return np.concatenate(y_true_parts, axis=0), np.concatenate(y_pred_parts, axis=0)
+
+    def _collect_layer_outputs(self, graphs, batch_size, layer_name):
+        if self.model is None:
+            raise RuntimeError("Model has not been trained yet.")
+        embedding_model = keras.Model(
+            inputs=self.model.inputs,
+            outputs=self.model.get_layer(layer_name).output,
+        )
+        loader = DisjointLoader(_MiniDataset(graphs), batch_size=batch_size, shuffle=False, epochs=1)
+        outputs = []
+        for inputs, _targets in loader:
+            outputs.append(np.asarray(embedding_model(inputs, training=False)))
+        return np.concatenate(outputs, axis=0)
+
+    def _collect_node_embeddings(self, graphs, batch_size, layer_name):
+        if self.model is None:
+            raise RuntimeError("Model has not been trained yet.")
+        embedding_model = keras.Model(
+            inputs=self.model.inputs,
+            outputs=self.model.get_layer(layer_name).output,
+        )
+        loader = DisjointLoader(_MiniDataset(graphs), batch_size=batch_size, shuffle=False, epochs=1)
+        outputs, graph_indices = [], []
+        graph_offset = 0
+        for inputs, _targets in loader:
+            _x_batch, _a_batch, batch_idx = inputs
+            outputs.append(np.asarray(embedding_model(inputs, training=False)))
+            batch_idx_np = np.asarray(batch_idx)
+            graph_indices.append(batch_idx_np + graph_offset)
+            graph_offset += int(batch_idx_np.max()) + 1
+        return np.concatenate(outputs, axis=0), np.concatenate(graph_indices, axis=0)
 
     # ------------------------------------------------------------------ #
     # Serialization
@@ -423,3 +475,36 @@ def plot_predictions(
 
     fig.tight_layout()
     return fig
+
+
+def pairwise_cosine_similarity(embeddings: np.ndarray) -> np.ndarray:
+    """Compute pairwise cosine similarity for latent vectors."""
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    safe_norms = np.maximum(norms, 1e-12)
+    normalized = embeddings / safe_norms
+    return normalized @ normalized.T
+
+
+def pairwise_euclidean_distance(embeddings: np.ndarray) -> np.ndarray:
+    """Compute pairwise Euclidean distances for latent vectors."""
+    diff = embeddings[:, None, :] - embeddings[None, :, :]
+    return np.sqrt(np.sum(diff * diff, axis=-1))
+
+
+def project_embeddings(
+    embeddings: np.ndarray,
+    method: str = "pca",
+    n_components: int = 2,
+    random_state: int = 42,
+):
+    """Project embeddings to a low-dimensional space for inspection."""
+    if method == "pca":
+        centered = embeddings - np.mean(embeddings, axis=0, keepdims=True)
+        _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
+        components = vt[:n_components]
+        return centered @ components.T
+    if method == "tsne":
+        from sklearn.manifold import TSNE
+
+        return TSNE(n_components=n_components, random_state=random_state, init="pca").fit_transform(embeddings)
+    raise ValueError(f"Unsupported projection method: {method}")
