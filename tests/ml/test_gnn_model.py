@@ -9,10 +9,12 @@ tf = pytest.importorskip("tensorflow")
 spektral = pytest.importorskip("spektral")
 
 from squadds.ml.graph.gnn_model import (  # noqa: E402
+    AddSelfLoopsK3,
     GCNConvK3,
     GlobalAttentionPoolK3,
     GraphAttentionConvK3,
     GraphForwardModel,
+    NormalizeAdjacencyK3,
     UnpackNodeFeatures,
 )
 
@@ -39,6 +41,22 @@ class TestGraphAttentionConvK3:
         a_tf = tf.sparse.from_dense(tf.constant(a_dense))
         out = layer([x, a_tf])
         assert out.shape == (4, 24)
+
+
+class TestAddSelfLoopsK3:
+    def test_diagonal_is_added(self):
+        layer = AddSelfLoopsK3()
+        a_dense = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        out = tf.sparse.to_dense(layer(tf.sparse.from_dense(a_dense))).numpy()
+        np.testing.assert_allclose(out, np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32))
+
+
+class TestNormalizeAdjacencyK3:
+    def test_symmetric_normalization_with_self_loops(self):
+        layer = NormalizeAdjacencyK3()
+        a_dense = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32)
+        out = tf.sparse.to_dense(layer(tf.sparse.from_dense(a_dense))).numpy()
+        np.testing.assert_allclose(out, np.full((2, 2), 0.5, dtype=np.float32))
 
 
 class TestGlobalAttentionPoolK3:

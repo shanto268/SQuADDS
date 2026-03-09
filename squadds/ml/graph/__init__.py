@@ -40,9 +40,11 @@ def __getattr__(name):
         "NodeEncoder": "squadds.ml.graph.encoders",
         # gnn model
         "GraphForwardModel": "squadds.ml.graph.gnn_model",
+        "AddSelfLoopsK3": "squadds.ml.graph.gnn_model",
         "GCNConvK3": "squadds.ml.graph.gnn_model",
         "GraphAttentionConvK3": "squadds.ml.graph.gnn_model",
         "GlobalAttentionPoolK3": "squadds.ml.graph.gnn_model",
+        "NormalizeAdjacencyK3": "squadds.ml.graph.gnn_model",
         "UnpackNodeFeatures": "squadds.ml.graph.gnn_model",
         # trainer
         "GraphTrainer": "squadds.ml.graph.trainer",

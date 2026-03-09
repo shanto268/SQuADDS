@@ -97,6 +97,51 @@ class GCNConvK3(layers.Layer):
 
 
 # ---------------------------------------------------------------------------
+# Adjacency preprocessing layers
+# ---------------------------------------------------------------------------
+
+
+class AddSelfLoopsK3(layers.Layer):
+    """Add sparse self-loops to an adjacency matrix."""
+
+    def call(self, a):
+        adjacency = tf.sparse.reorder(a) if isinstance(a, tf.SparseTensor) else tf.sparse.from_dense(a)
+        n_nodes = tf.cast(adjacency.dense_shape[0], dtype=tf.int64)
+        diag = tf.range(n_nodes, dtype=tf.int64)
+        eye = tf.SparseTensor(
+            indices=tf.stack([diag, diag], axis=1),
+            values=tf.ones((n_nodes,), dtype=adjacency.dtype),
+            dense_shape=adjacency.dense_shape,
+        )
+        return tf.sparse.reorder(tf.sparse.add(adjacency, eye))
+
+    def get_config(self):
+        return super().get_config()
+
+
+class NormalizeAdjacencyK3(layers.Layer):
+    """Add self-loops and apply symmetric degree normalization."""
+
+    def call(self, a):
+        adjacency = AddSelfLoopsK3()(a)
+        degrees = tf.sparse.reduce_sum(adjacency, axis=1)
+        inv_sqrt_degrees = tf.math.rsqrt(tf.maximum(degrees, tf.cast(1e-12, dtype=degrees.dtype)))
+        row = adjacency.indices[:, 0]
+        col = adjacency.indices[:, 1]
+        values = adjacency.values * tf.gather(inv_sqrt_degrees, row) * tf.gather(inv_sqrt_degrees, col)
+        return tf.sparse.reorder(
+            tf.SparseTensor(
+                indices=adjacency.indices,
+                values=values,
+                dense_shape=adjacency.dense_shape,
+            )
+        )
+
+    def get_config(self):
+        return super().get_config()
+
+
+# ---------------------------------------------------------------------------
 # Pure Keras 3 GraphAttention layer
 # ---------------------------------------------------------------------------
 
@@ -106,8 +151,7 @@ class GraphAttentionConvK3(layers.Layer):
 
     This layer computes pairwise attention scores only across graph edges
     indicated by ``a`` and then forms a weighted sum of neighboring node
-    features. It intentionally consumes the adjacency exactly as provided so
-    existing callers stay backwards-compatible.
+    features.
     """
 
     def __init__(self, channels, activation=None, use_bias=True, negative_slope=0.2, **kwargs):
@@ -142,14 +186,6 @@ class GraphAttentionConvK3(layers.Layer):
 
         a_dense = tf.sparse.to_dense(a) if isinstance(a, tf.SparseTensor) else tf.convert_to_tensor(a)
         a_mask = tf.cast(a_dense > 0, dtype=h.dtype)
-
-        # Avoid invalid softmax rows for isolated nodes while preserving the
-        # provided adjacency for connected nodes.
-        row_degree = tf.reduce_sum(a_mask, axis=-1, keepdims=True)
-        isolated_self_mask = tf.cast(tf.equal(row_degree, 0.0), dtype=h.dtype) * tf.eye(
-            tf.shape(a_mask)[0], dtype=h.dtype
-        )
-        a_mask = tf.maximum(a_mask, isolated_self_mask)
 
         n_nodes = tf.shape(h)[0]
         h_i = tf.tile(tf.expand_dims(h, axis=1), [1, n_nodes, 1])
@@ -327,7 +363,7 @@ class GraphForwardModel:
         k_max: Max design-parameter slots per node.
         n_ls: Number of layer-stack rows (padded).
         readout_dim: Hidden dim of the readout MLP.
-        dropout_rate: Dropout rate applied after GCN layers.
+        dropout_rate: Dropout rate applied after message-passing layers.
         aggregation: ``"deepsets"`` or ``"sum"`` for the GeometricEncoder.
         message_passing: ``"gcn"`` or ``"gat"``.
     """
@@ -396,9 +432,11 @@ class GraphForwardModel:
         if self.message_passing == "gcn":
             message_passing_layer = GCNConvK3
             message_passing_name = "gcn"
+            adjacency = NormalizeAdjacencyK3(name="normalize_adjacency")(a_in)
         elif self.message_passing == "gat":
             message_passing_layer = GraphAttentionConvK3
             message_passing_name = "gat"
+            adjacency = AddSelfLoopsK3(name="add_self_loops")(a_in)
         else:
             raise ValueError(f"Unsupported message_passing mode: {self.message_passing}")
 
@@ -409,7 +447,7 @@ class GraphForwardModel:
                 self.node_latent_dim,
                 activation="relu",
                 name=f"{message_passing_name}_{layer_idx}",
-            )([h, a_in])
+            )([h, adjacency])
             h = layers.Dropout(self.dropout_rate)(h)
             h = layers.Add()([h, h_prev])  # residual (using Keras layer, not raw +)
 

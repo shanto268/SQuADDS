@@ -333,9 +333,11 @@ class GraphTrainer:
             PortEncoder,
         )
         from squadds.ml.graph.gnn_model import (
+            AddSelfLoopsK3,
             GCNConvK3,
             GlobalAttentionPoolK3,
             GraphAttentionConvK3,
+            NormalizeAdjacencyK3,
             UnpackNodeFeatures,
         )
 
@@ -357,9 +359,11 @@ class GraphTrainer:
             "GeometricEncoder": GeometricEncoder,
             "PortEncoder": PortEncoder,
             "NodeEncoder": NodeEncoder,
+            "AddSelfLoopsK3": AddSelfLoopsK3,
             "GCNConvK3": GCNConvK3,
             "GraphAttentionConvK3": GraphAttentionConvK3,
             "GlobalAttentionPoolK3": GlobalAttentionPoolK3,
+            "NormalizeAdjacencyK3": NormalizeAdjacencyK3,
             "UnpackNodeFeatures": UnpackNodeFeatures,
         }
         trainer.model = keras.models.load_model(path / "model.keras", custom_objects=custom_objects)
