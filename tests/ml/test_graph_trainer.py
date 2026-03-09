@@ -36,7 +36,7 @@ def tiny_graphs(tmp_path):
 
 
 class TestGraphTrainer:
-    def test_train_runs(self, tiny_graphs):
+    def test_train_runs(self, tiny_graphs, tmp_path):
         model_builder = GraphForwardModel(
             vocab_size=10,
             embed_dim=4,
@@ -55,11 +55,12 @@ class TestGraphTrainer:
             epochs=3,
             batch_size=8,
             verbose=0,
+            save_dir=tmp_path / "train_runs",
         )
         assert "loss" in history
         assert len(history["loss"]) == 3
 
-    def test_evaluate_returns_metrics(self, tiny_graphs):
+    def test_evaluate_returns_metrics(self, tiny_graphs, tmp_path):
         model_builder = GraphForwardModel(
             vocab_size=10,
             embed_dim=4,
@@ -72,7 +73,13 @@ class TestGraphTrainer:
             dropout_rate=0.0,
         )
         trainer = GraphTrainer(model_builder, learning_rate=1e-3, target_names=["sum", "prod"])
-        trainer.train(train_graphs=tiny_graphs[:20], epochs=2, batch_size=8, verbose=0)
+        trainer.train(
+            train_graphs=tiny_graphs[:20],
+            epochs=2,
+            batch_size=8,
+            verbose=0,
+            save_dir=tmp_path / "evaluate_runs",
+        )
         metrics = trainer.evaluate(tiny_graphs[20:])
         assert "sum" in metrics
         assert "prod" in metrics
@@ -94,7 +101,13 @@ class TestGraphTrainer:
             dropout_rate=0.0,
         )
         trainer = GraphTrainer(model_builder, learning_rate=1e-3, target_names=["sum", "prod"])
-        trainer.train(train_graphs=tiny_graphs[:20], epochs=2, batch_size=8, verbose=0)
+        trainer.train(
+            train_graphs=tiny_graphs[:20],
+            epochs=2,
+            batch_size=8,
+            verbose=0,
+            save_dir=tmp_path / "save_and_load_train",
+        )
 
         save_dir = tmp_path / "model_save"
         trainer.save(save_dir)
@@ -105,3 +118,33 @@ class TestGraphTrainer:
         assert loaded.model is not None
         preds = loaded.predict(tiny_graphs[20:])
         assert preds.shape[1] == 2
+
+    def test_train_auto_saves_by_default(self, tiny_graphs, tmp_path, monkeypatch):
+        model_builder = GraphForwardModel(
+            vocab_size=10,
+            embed_dim=4,
+            node_latent_dim=16,
+            n_gcn_layers=1,
+            n_targets=2,
+            k_max=5,
+            n_ls=3,
+            readout_dim=8,
+            dropout_rate=0.0,
+        )
+        trainer = GraphTrainer(model_builder, learning_rate=1e-3, target_names=["sum", "prod"])
+
+        monkeypatch.chdir(tmp_path)
+        trainer.train(
+            train_graphs=tiny_graphs[:20],
+            val_graphs=tiny_graphs[20:],
+            epochs=2,
+            batch_size=8,
+            verbose=0,
+        )
+
+        assert trainer.last_save_dir is not None
+        save_dir = trainer.last_save_dir
+        assert save_dir.parent == tmp_path / "saved_models"
+        assert (save_dir / "model.keras").exists()
+        assert (save_dir / "config.json").exists()
+        assert (save_dir / "history.json").exists()

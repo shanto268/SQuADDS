@@ -10,6 +10,7 @@ SQuADDS-friendly defaults and provides ``train()``, ``evaluate()``,
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ class GraphTrainer:
         self.use_mixed_precision = use_mixed_precision
         self.model: keras.Model | None = None
         self.history: dict | None = None
+        self.last_save_dir: Path | None = None
         self._config: dict[str, Any] = {
             "vocab_size": model_builder.vocab_size,
             "embed_dim": model_builder.embed_dim,
@@ -133,6 +135,8 @@ class GraphTrainer:
         batch_size: int = 32,
         patience: int = 15,
         verbose: int = 1,
+        save_dir: str | Path | None = None,
+        save_best_only: bool = True,
     ) -> dict:
         """Train the graph forward model.
 
@@ -143,6 +147,11 @@ class GraphTrainer:
             batch_size: Mini-batch size for ``DisjointLoader``.
             patience: Early-stopping patience (only if *val_graphs* given).
             verbose: Keras verbosity level.
+            save_dir: Directory where checkpoints and config are written.
+                If omitted, training automatically creates a timestamped run
+                directory under ``saved_models``.
+            save_best_only: If ``True``, keep only the best checkpoint for
+                the monitored metric.
 
         Returns:
             Keras ``History.history`` dictionary.
@@ -153,6 +162,11 @@ class GraphTrainer:
             loss="mse",
             metrics=["mae"],
         )
+
+        checkpoint_dir = self._resolve_save_dir(save_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.last_save_dir = checkpoint_dir
+        self._write_config(checkpoint_dir)
 
         train_loader = DisjointLoader(_MiniDataset(train_graphs), batch_size=batch_size, shuffle=True)
 
@@ -174,6 +188,16 @@ class GraphTrainer:
                 )
             )
 
+        monitor = "val_loss" if val_loader is not None else "loss"
+        callbacks.append(
+            keras.callbacks.ModelCheckpoint(
+                filepath=checkpoint_dir / "model.keras",
+                monitor=monitor,
+                save_best_only=save_best_only,
+                verbose=verbose,
+            )
+        )
+
         self.history = self.model.fit(
             train_loader.load(),
             steps_per_epoch=train_loader.steps_per_epoch,
@@ -183,6 +207,12 @@ class GraphTrainer:
             callbacks=callbacks,
             verbose=verbose,
         ).history
+
+        self._write_config(checkpoint_dir)
+        with open(checkpoint_dir / "history.json", "w") as f:
+            json.dump(self.history, f, indent=2)
+        if not (checkpoint_dir / "model.keras").exists():
+            self.model.save(checkpoint_dir / "model.keras")
 
         return self.history
 
@@ -252,12 +282,38 @@ class GraphTrainer:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         self.model.save(path / "model.keras")
+        self._write_config(path)
+        if self.history is not None:
+            with open(path / "history.json", "w") as f:
+                json.dump(self.history, f, indent=2)
+
+    def _write_config(self, path: Path) -> None:
         with open(path / "config.json", "w") as f:
             json.dump(
-                {"builder": self._config, "target_names": self.target_names},
+                {
+                    "builder": self._config,
+                    "trainer": {
+                        "learning_rate": self.learning_rate,
+                        "use_mixed_precision": self.use_mixed_precision,
+                    },
+                    "target_names": self.target_names,
+                },
                 f,
                 indent=2,
             )
+
+    def _resolve_save_dir(self, save_dir: str | Path | None) -> Path:
+        if save_dir is not None:
+            return Path(save_dir)
+
+        base_dir = Path("saved_models")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = base_dir / f"run_{timestamp}"
+        suffix = 1
+        while candidate.exists():
+            candidate = base_dir / f"run_{timestamp}_{suffix}"
+            suffix += 1
+        return candidate
 
     @classmethod
     def load(cls, path: str | Path) -> GraphTrainer:
@@ -286,7 +342,13 @@ class GraphTrainer:
             cfg = json.load(f)
 
         builder = GraphForwardModel(**cfg["builder"])
-        trainer = cls(builder, target_names=cfg.get("target_names"))
+        trainer_cfg = cfg.get("trainer", {})
+        trainer = cls(
+            builder,
+            learning_rate=trainer_cfg.get("learning_rate", 1e-3),
+            target_names=cfg.get("target_names"),
+            use_mixed_precision=trainer_cfg.get("use_mixed_precision", False),
+        )
 
         custom_objects = {
             "LayerStackEncoder": LayerStackEncoder,
