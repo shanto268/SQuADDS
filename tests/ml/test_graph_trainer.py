@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 
 tf = pytest.importorskip("tensorflow")
 spektral = pytest.importorskip("spektral")
@@ -41,6 +42,41 @@ def tiny_graphs(tmp_path):
 
 
 class TestGraphTrainer:
+    def test_coerce_model_inputs_returns_tensor_tuple(self, tiny_graphs):
+        model_builder = GraphForwardModel(
+            vocab_size=10,
+            embed_dim=4,
+            node_latent_dim=16,
+            n_gcn_layers=1,
+            n_targets=2,
+            k_max=5,
+            n_ls=3,
+            readout_dim=8,
+            dropout_rate=0.0,
+        )
+        trainer = GraphTrainer(model_builder, learning_rate=1e-3, target_names=["sum", "prod"])
+
+        inputs = (
+            np.random.randn(4, 8).astype(np.float32),
+            sp.csr_matrix(
+                np.array(
+                    [
+                        [0.0, 1.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
+                    dtype=np.float32,
+                )
+            ),
+            np.array([0, 0, 1, 1], dtype=np.int32),
+        )
+        x_tensor, a_tensor, i_tensor = trainer._coerce_model_inputs(inputs)
+
+        assert tf.is_tensor(x_tensor)
+        assert isinstance(a_tensor, tf.SparseTensor)
+        assert tf.is_tensor(i_tensor)
+
     def test_train_runs(self, tiny_graphs, tmp_path):
         model_builder = GraphForwardModel(
             vocab_size=10,

@@ -283,7 +283,8 @@ class GraphTrainer:
         y_true_parts, y_pred_parts = [], []
         for batch in loader:
             inputs, targets = batch
-            preds = self.model(inputs, training=False)
+            model_inputs = self._coerce_model_inputs(inputs)
+            preds = self.model(model_inputs, training=False)
             y_true_parts.append(np.asarray(targets))
             y_pred_parts.append(np.asarray(preds))
         return np.concatenate(y_true_parts, axis=0), np.concatenate(y_pred_parts, axis=0)
@@ -298,7 +299,8 @@ class GraphTrainer:
         loader = DisjointLoader(_MiniDataset(graphs), batch_size=batch_size, shuffle=False, epochs=1)
         outputs = []
         for inputs, _targets in loader:
-            outputs.append(np.asarray(embedding_model(inputs, training=False)))
+            model_inputs = self._coerce_model_inputs(inputs)
+            outputs.append(np.asarray(embedding_model(model_inputs, training=False)))
         return np.concatenate(outputs, axis=0)
 
     def _collect_node_embeddings(self, graphs, batch_size, layer_name):
@@ -313,11 +315,36 @@ class GraphTrainer:
         graph_offset = 0
         for inputs, _targets in loader:
             _x_batch, _a_batch, batch_idx = inputs
-            outputs.append(np.asarray(embedding_model(inputs, training=False)))
+            model_inputs = self._coerce_model_inputs(inputs)
+            outputs.append(np.asarray(embedding_model(model_inputs, training=False)))
             batch_idx_np = np.asarray(batch_idx)
             graph_indices.append(batch_idx_np + graph_offset)
             graph_offset += int(batch_idx_np.max()) + 1
         return np.concatenate(outputs, axis=0), np.concatenate(graph_indices, axis=0)
+
+    def _coerce_model_inputs(self, inputs):
+        """Convert loader batches into a uniform all-tensor input tuple."""
+        import tensorflow as tf
+
+        x_batch, a_batch, i_batch = inputs
+        x_tensor = tf.convert_to_tensor(x_batch)
+        i_tensor = tf.convert_to_tensor(i_batch)
+
+        if isinstance(a_batch, tf.SparseTensor):
+            a_tensor = tf.sparse.reorder(a_batch)
+        elif hasattr(a_batch, "tocoo"):
+            a_coo = a_batch.tocoo()
+            indices = np.column_stack((a_coo.row, a_coo.col))
+            a_tensor = tf.SparseTensor(
+                indices=indices,
+                values=a_coo.data,
+                dense_shape=a_coo.shape,
+            )
+            a_tensor = tf.sparse.reorder(a_tensor)
+        else:
+            a_tensor = tf.sparse.from_dense(tf.convert_to_tensor(a_batch))
+
+        return x_tensor, a_tensor, i_tensor
 
     # ------------------------------------------------------------------ #
     # Serialization
