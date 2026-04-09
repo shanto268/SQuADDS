@@ -1,4 +1,4 @@
-"""Trainer for the Universal GNN Model."""
+"""Trainer for the Universal GNN (HeteroData version)."""
 
 import os
 
@@ -12,41 +12,38 @@ from squadds.ml.universal.model.loss import MaskedMultiTaskLoss
 
 
 class UniversalTrainer:
-    """Handles the training loop for the Universal Graph Pipeline."""
+    """Handles the training loop for the Heterogeneous Universal GNN."""
 
     def __init__(
         self,
         model: UniversalGNN,
         learning_rate: float = 1e-3,
         device: str = "cpu",
-        node_weights: list[float] | None = None,
-        edge_weights: list[float] | None = None,
         checkpoint_dir: str = "checkpoints",
     ):
-        """
-        Args:
-            model: The GATv2 model to train.
-            learning_rate: Optimizer learning rate.
-            device: 'cpu' or 'cuda'.
-            node_weights: Optional scaling weights for node targets.
-            edge_weights: Optional scaling weights for edge targets.
-            checkpoint_dir: Directory to save model checkpoints.
-        """
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.optimizer = Adam(self.model.parameters(), lr=learning_rate)
-        self.criterion = MaskedMultiTaskLoss(node_weights=node_weights, edge_weights=edge_weights)
+        self.criterion = MaskedMultiTaskLoss()
         self.checkpoint_dir = checkpoint_dir
 
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
 
-    def train_epoch(self, dataloader: DataLoader) -> tuple[float, float, float]:
-        """Train for one epoch.
+    def _step(self, batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run one forward pass and compute loss."""
+        out = self.model(batch)
 
-        Returns:
-            Tuple of (avg_total_loss, avg_node_loss, avg_edge_loss).
-        """
+        node_preds = out["node_preds"]
+        edge_preds = out["edge_preds"]
+
+        node_targets = batch["component"].y
+        edge_targets = batch["component", "physical", "component"].y
+
+        return self.criterion(node_preds, node_targets, edge_preds, edge_targets)
+
+    def train_epoch(self, dataloader: DataLoader) -> tuple[float, float, float]:
+        """Train for one epoch."""
         self.model.train()
         total_loss_accum = 0.0
         node_loss_accum = 0.0
@@ -57,15 +54,10 @@ class UniversalTrainer:
             batch = batch.to(self.device)
             self.optimizer.zero_grad()
 
-            node_preds, edge_preds = self.model(batch)
-
-            loss, node_loss, edge_loss = self.criterion(node_preds, batch.y, edge_preds, batch.y_edge)
-
+            loss, node_loss, edge_loss = self._step(batch)
             loss.backward()
 
-            # gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
             self.optimizer.step()
 
             total_loss_accum += loss.item()
@@ -75,15 +67,10 @@ class UniversalTrainer:
 
         if batches == 0:
             return 0.0, 0.0, 0.0
-
         return total_loss_accum / batches, node_loss_accum / batches, edge_loss_accum / batches
 
     def evaluate(self, dataloader: DataLoader) -> tuple[float, float, float]:
-        """Evaluate the model on a validation/test set.
-
-        Returns:
-            Tuple of (avg_total_loss, avg_node_loss, avg_edge_loss).
-        """
+        """Evaluate on a validation/test set."""
         self.model.eval()
         total_loss_accum = 0.0
         node_loss_accum = 0.0
@@ -93,10 +80,7 @@ class UniversalTrainer:
         with torch.no_grad():
             for batch in tqdm(dataloader, desc="Evaluating", leave=False):
                 batch = batch.to(self.device)
-
-                node_preds, edge_preds = self.model(batch)
-
-                loss, node_loss, edge_loss = self.criterion(node_preds, batch.y, edge_preds, batch.y_edge)
+                loss, node_loss, edge_loss = self._step(batch)
 
                 total_loss_accum += loss.item()
                 node_loss_accum += node_loss.item()
@@ -105,7 +89,6 @@ class UniversalTrainer:
 
         if batches == 0:
             return 0.0, 0.0, 0.0
-
         return total_loss_accum / batches, node_loss_accum / batches, edge_loss_accum / batches
 
     def train_loop(
@@ -115,18 +98,15 @@ class UniversalTrainer:
         epochs: int,
         patience: int = 10,
     ) -> dict:
-        """Execute the full training loop with early stopping.
-
-        Args:
-            train_loader: DataLoader for training set.
-            val_loader: DataLoader for validation set.
-            epochs: Maximum number of epochs.
-            patience: Early stopping patience.
-
-        Returns:
-            Dictionary containing history of losses.
-        """
-        history = {"train_loss": [], "val_loss": [], "train_node": [], "val_node": [], "train_edge": [], "val_edge": []}
+        """Execute the full training loop with early stopping."""
+        history = {
+            "train_loss": [],
+            "val_loss": [],
+            "train_node": [],
+            "val_node": [],
+            "train_edge": [],
+            "val_edge": [],
+        }
 
         best_val_loss = float("inf")
         patience_counter = 0

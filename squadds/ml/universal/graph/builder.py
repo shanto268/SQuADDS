@@ -1,6 +1,11 @@
-"""Graph builder for generating PyG Data objects from layouts and netlists.
+"""Graph builder producing PyG HeteroData objects.
 
-Orchestrates: layout → static embeddings → edge features → virtual hub → PyG Data.
+Schema:
+    Node types: 'component', 'virtual'
+    Edge types:
+        ('component', 'physical', 'component')
+        ('component', 'spatial_in', 'virtual')
+        ('virtual', 'spatial_out', 'component')
 """
 
 from __future__ import annotations
@@ -10,7 +15,7 @@ import json
 import os
 
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import HeteroData
 
 from squadds.ml.universal.features.edge_extractor import EdgeFeatureExtractor
 from squadds.ml.universal.features.node_encoder import (
@@ -19,14 +24,15 @@ from squadds.ml.universal.features.node_encoder import (
     get_polygon_for_component,
 )
 from squadds.ml.universal.graph.netlist import CircuitNetlist
-from squadds.ml.universal.graph.virtual_hub import VirtualHubInjector
+from squadds.ml.universal.graph.virtual_hub import compute_hub_embedding, compute_spatial_edge_features
+from squadds.ml.universal.model.gat_model import NUM_EDGE_TARGETS, NUM_NODE_TARGETS
 
 
 class UniversalGraphBuilder:
-    """Builds PyG Data objects from geometric layouts and netlists.
+    """Builds PyG HeteroData objects from layouts and netlists.
 
-    Uses static embeddings (param_sum + moments + shape_tensor) for nodes,
-    rich geometric features for edges, and a virtual hub node for global context.
+    Produces typed nodes and edges following the heterogeneous graph schema.
+    Supports disk caching keyed by design parameter hash.
     """
 
     def __init__(
@@ -34,27 +40,17 @@ class UniversalGraphBuilder:
         shape_resolution: int = DEFAULT_SHAPE_RESOLUTION,
         cache_dir: str | None = None,
     ):
-        """
-        Args:
-            shape_resolution: Resolution for all shape tensors (nodes, edges, hub).
-                Change this single value to scale up for production.
-            cache_dir: If set, cache constructed graphs to disk keyed by
-                a hash of the design parameters.  Avoids redundant recomputation.
-        """
         self.shape_resolution = shape_resolution
         self.edge_extractor = EdgeFeatureExtractor(shape_resolution=shape_resolution)
-        self.hub_injector = VirtualHubInjector(shape_resolution=shape_resolution)
         self.cache_dir = cache_dir
         if cache_dir and not os.path.exists(cache_dir):
             os.makedirs(cache_dir, exist_ok=True)
 
     def _cache_key(self, layout: dict, netlist: CircuitNetlist) -> str:
-        """Compute a deterministic hash for caching."""
-        # Hash the design params + netlist structure
         params = layout.get("design_params", {})
         netlist_sig = json.dumps(
             {
-                "components": [c.name for c in netlist.components],
+                "components": [(c.name, c.component_type) for c in netlist.components],
                 "edges": [(e.src, e.dst, e.coupling_type) for e in netlist.edges],
             },
             sort_keys=True,
@@ -62,7 +58,7 @@ class UniversalGraphBuilder:
         combined = json.dumps(params, sort_keys=True) + netlist_sig
         return hashlib.md5(combined.encode()).hexdigest()
 
-    def _try_load_cache(self, key: str) -> Data | None:
+    def _try_load_cache(self, key: str) -> HeteroData | None:
         if not self.cache_dir:
             return None
         path = os.path.join(self.cache_dir, f"{key}.pt")
@@ -70,7 +66,7 @@ class UniversalGraphBuilder:
             return torch.load(path, weights_only=False)
         return None
 
-    def _save_cache(self, key: str, data: Data) -> None:
+    def _save_cache(self, key: str, data: HeteroData) -> None:
         if not self.cache_dir:
             return
         path = os.path.join(self.cache_dir, f"{key}.pt")
@@ -81,87 +77,125 @@ class UniversalGraphBuilder:
         layout: dict,
         netlist: CircuitNetlist,
         global_features: dict[str, float] | None = None,
-    ) -> Data:
-        """Construct the PyG Data object from layout + netlist.
+    ) -> HeteroData:
+        """Construct a HeteroData object from layout + netlist.
 
         Args:
-            layout: Output from ``build_layout`` or ``build_composite_layout``.
+            layout: Output from build_layout() or build_composite_layout().
             netlist: CircuitNetlist defining components and edges.
-            global_features: Global info (dielectric_constant, etc.) for hub node.
+            global_features: Layer-stack info (dielectric_constant, etc.).
 
         Returns:
-            PyG Data object with static embeddings, edge features, and virtual hub.
+            PyG HeteroData with typed nodes and edges.
         """
         netlist.validate()
 
-        # ── Check cache ───────────────────────────────────────────────
         cache_key = self._cache_key(layout, netlist)
         cached = self._try_load_cache(cache_key)
         if cached is not None:
             return cached
 
         R = self.shape_resolution
+        data = HeteroData()
 
-        # ── Node features ─────────────────────────────────────────────
+        # ── Component nodes ───────────────────────────────────────────
         node_features = []
         component_polygons = []
+        component_types = []
 
         for comp_spec in netlist.components:
-            comp_name = comp_spec.name
-            comp_data = layout.get(comp_name)
+            comp_data = layout.get(comp_spec.name)
             if not comp_data:
-                raise ValueError(f"Component '{comp_name}' found in netlist but not in layout.")
+                raise ValueError(f"Component '{comp_spec.name}' not in layout.")
 
             polygon = get_polygon_for_component(comp_data)
             params = comp_data.get("params", {})
-
             embedding = compute_static_embedding(polygon, params=params, shape_resolution=R)
+
             node_features.append(torch.from_numpy(embedding))
             component_polygons.append(polygon)
+            component_types.append(comp_spec.component_type)
 
-        x = torch.stack(node_features, dim=0)  # (N, embed_dim)
+        data["component"].x = torch.stack(node_features, dim=0)
 
-        # ── Edge features ─────────────────────────────────────────────
-        edge_index = netlist.to_pyg_edge_index()
+        # Store component types and names as metadata
+        data["component"].component_type = component_types
+        data["component"].component_name = [c.name for c in netlist.components]
+
+        # ── Node targets (NaN for inapplicable targets) ───────────────
+        from squadds.ml.universal.model.gat_model import COMPONENT_TARGET_MASK
+
+        n_comp = len(netlist.components)
+        y_node = torch.full((n_comp, NUM_NODE_TARGETS), float("nan"))
+
+        # Build target mask from component types
+        target_mask = torch.zeros(n_comp, NUM_NODE_TARGETS, dtype=torch.bool)
+        for i, ctype in enumerate(component_types):
+            mask = COMPONENT_TARGET_MASK.get(ctype, [False] * NUM_NODE_TARGETS)
+            target_mask[i] = torch.tensor(mask)
+
+        data["component"].y = y_node
+        data["component"].target_mask = target_mask
+
+        # ── Physical edges (component <-> component) ──────────────────
         comp_name_to_idx = {comp.name: i for i, comp in enumerate(netlist.components)}
 
-        edge_features = []
-        if edge_index.size(1) > 0:
+        if netlist.edges:
+            phys_src, phys_dst = [], []
+            phys_features = []
+            phys_targets = []
+
             for edge_spec in netlist.edges:
-                src_comp = edge_spec.src.split(".")[0]
-                dst_comp = edge_spec.dst.split(".")[0]
+                src_name = edge_spec.src.split(".")[0]
+                dst_name = edge_spec.dst.split(".")[0]
+                src_idx = comp_name_to_idx[src_name]
+                dst_idx = comp_name_to_idx[dst_name]
 
-                poly_a = component_polygons[comp_name_to_idx[src_comp]]
-                poly_b = component_polygons[comp_name_to_idx[dst_comp]]
-
+                poly_a = component_polygons[src_idx]
+                poly_b = component_polygons[dst_idx]
                 feat = self.edge_extractor.extract(poly_a, poly_b, coupling_type=edge_spec.coupling_type)
                 feat_tensor = torch.from_numpy(feat)
 
-                # Undirected: same features for both directions
-                edge_features.append(feat_tensor)
-                edge_features.append(feat_tensor)
+                # Undirected: both directions
+                phys_src.extend([src_idx, dst_idx])
+                phys_dst.extend([dst_idx, src_idx])
+                phys_features.extend([feat_tensor, feat_tensor])
+                phys_targets.extend(
+                    [
+                        torch.full((NUM_EDGE_TARGETS,), float("nan")),
+                        torch.full((NUM_EDGE_TARGETS,), float("nan")),
+                    ]
+                )
 
-            edge_attr = torch.stack(edge_features, dim=0)
+            data["component", "physical", "component"].edge_index = torch.tensor([phys_src, phys_dst], dtype=torch.long)
+            data["component", "physical", "component"].edge_attr = torch.stack(phys_features)
+            data["component", "physical", "component"].y = torch.stack(phys_targets)
         else:
-            edge_attr = torch.empty((0, self.edge_extractor.dim), dtype=torch.float)
+            data["component", "physical", "component"].edge_index = torch.empty((2, 0), dtype=torch.long)
+            data["component", "physical", "component"].edge_attr = torch.empty(
+                (0, self.edge_extractor.dim), dtype=torch.float
+            )
+            data["component", "physical", "component"].y = torch.empty((0, NUM_EDGE_TARGETS), dtype=torch.float)
 
-        # ── Placeholder targets (filled by dataset builder) ───────────
-        y = torch.full((x.size(0), 5), float("nan"))  # 5 Hamiltonian targets
-        y_edge = torch.full((edge_attr.size(0), 5), float("nan"))
+        # ── Virtual node ──────────────────────────────────────────────
+        hub_embedding = compute_hub_embedding(component_polygons, layout.get("design_params", {}), global_features, R)
+        data["virtual"].x = torch.from_numpy(hub_embedding).unsqueeze(0)
 
-        data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
-        data.y_edge = y_edge
+        # ── Spatial edges (component <-> virtual) ─────────────────────
+        n_comp = len(netlist.components)
+        spatial_features = compute_spatial_edge_features(component_polygons, R)
 
-        # ── Virtual hub node ──────────────────────────────────────────
-        layout_params = layout.get("design_params", {})
-        data = self.hub_injector.inject(
-            data,
-            component_polygons=component_polygons,
-            layout_params=layout_params,
-            global_info=global_features,
-        )
+        # component -> virtual
+        spat_src_in = torch.arange(n_comp, dtype=torch.long)
+        spat_dst_in = torch.zeros(n_comp, dtype=torch.long)
+        data["component", "spatial_in", "virtual"].edge_index = torch.stack([spat_src_in, spat_dst_in])
+        data["component", "spatial_in", "virtual"].edge_attr = spatial_features
 
-        # ── Cache ─────────────────────────────────────────────────────
+        # virtual -> component
+        spat_src_out = torch.zeros(n_comp, dtype=torch.long)
+        spat_dst_out = torch.arange(n_comp, dtype=torch.long)
+        data["virtual", "spatial_out", "component"].edge_index = torch.stack([spat_src_out, spat_dst_out])
+        data["virtual", "spatial_out", "component"].edge_attr = spatial_features.clone()
+
         self._save_cache(cache_key, data)
-
         return data
