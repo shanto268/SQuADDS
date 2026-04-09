@@ -90,3 +90,23 @@ def extract_edge_features(
         "mask_b": mask_b,
         "window_bounds": window.bounds,
     }
+
+
+class EdgeFeatureExtractor:
+    """Class wrapper for edge geometric feature extraction."""
+
+    def __init__(self, padding: float = 50.0, mask_resolution: int = 32):
+        self.padding = padding
+        self.mask_resolution = mask_resolution
+
+    def extract(self, poly_a: Polygon | MultiPolygon, poly_b: Polygon | MultiPolygon) -> dict:
+        """Extract features, handling no-interaction gracefully for the batch builder."""
+        try:
+            return extract_edge_features(poly_a, poly_b, padding=self.padding, mask_resolution=self.mask_resolution)
+        except NoInteractionError:
+            return {
+                "shortest_gap": float("inf"),
+                "overlap_length": 0.0,
+                "metal_area": 0.0,
+                "void_area": 0.0,
+            }
