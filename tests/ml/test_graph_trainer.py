@@ -185,7 +185,7 @@ class TestGraphTrainer:
 
         assert trainer.last_save_dir is not None
         save_dir = trainer.last_save_dir
-        assert save_dir.parent == tmp_path / "saved_models"
+        assert save_dir.parent.resolve() == (tmp_path / "saved_models").resolve()
         assert (save_dir / "model.keras").exists()
         assert (save_dir / "config.json").exists()
         assert (save_dir / "history.json").exists()

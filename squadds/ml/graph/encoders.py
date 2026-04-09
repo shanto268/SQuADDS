@@ -48,6 +48,16 @@ class LayerStackEncoder(layers.Layer):
         self.pool = layers.GlobalMaxPooling1D()
         self.dense = layers.Dense(out_dim, activation="relu")
 
+    def build(self, input_shape):
+        # input_shape: (batch, N_layers, 2)
+        self.conv.build(input_shape)
+        # After conv: (batch, N_layers-1, filters)
+        conv_out_shape = (input_shape[0], None, self.filters)
+        self.pool.build(conv_out_shape)
+        # After pool: (batch, filters)
+        self.dense.build((input_shape[0], self.filters))
+        super().build(input_shape)
+
     def call(self, x):
         """Forward pass.
 
@@ -350,6 +360,23 @@ class NodeEncoder(layers.Layer):
         self.concat = layers.Concatenate()
         self.fusion1 = layers.Dense(latent_dim, activation="relu")
         self.fusion2 = layers.Dense(latent_dim, activation="relu")
+
+        self._ls_out = ls_out
+        self._geo_out = geo_out
+        self._port_out = port_out
+
+    def build(self, input_shape):
+        # Build sub-encoders with representative shapes
+        self.ls_encoder.build((None, None, 2))
+        self.geo_encoder.build((None, self.k_max))
+        self.port_encoder.dense1.build((None, 5))
+        self.port_encoder.dense2.build((None, self.port_encoder.hidden_dim))
+
+        # Build fusion layers
+        combined_dim = self._ls_out + self._geo_out + self._port_out
+        self.fusion1.build((None, combined_dim))
+        self.fusion2.build((None, self.latent_dim))
+        super().build(input_shape)
 
     def call(self, layer_stack, key_ids, values, area, perimeter, ports):
         """Forward pass.

@@ -250,6 +250,13 @@ class GlobalAttentionPoolK3(layers.Layer):
         self.attn = layers.Dense(1)
         self.features_layer = layers.Dense(channels)
 
+    def build(self, input_shape):
+        # input_shape is [(N, d), (N,)]
+        h_shape = input_shape[0] if isinstance(input_shape, list) else input_shape
+        self.attn.build(h_shape)
+        self.features_layer.build(h_shape)
+        super().build(input_shape)
+
     def call(self, inputs):
         h, batch_idx = inputs  # h: (N, d), batch_idx: (N,)
 
