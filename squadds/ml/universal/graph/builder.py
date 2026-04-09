@@ -25,7 +25,7 @@ from squadds.ml.universal.features.node_encoder import (
 )
 from squadds.ml.universal.graph.netlist import CircuitNetlist
 from squadds.ml.universal.graph.virtual_hub import compute_hub_embedding, compute_spatial_edge_features
-from squadds.ml.universal.model.gat_model import NUM_EDGE_TARGETS, NUM_NODE_TARGETS
+from squadds.ml.universal.model.gat_model import NUM_NODE_TARGETS
 
 
 class UniversalGraphBuilder:
@@ -122,20 +122,17 @@ class UniversalGraphBuilder:
         data["component"].component_type = component_types
         data["component"].component_name = [c.name for c in netlist.components]
 
-        # ── Node targets (NaN for inapplicable targets) ───────────────
-        from squadds.ml.universal.model.gat_model import COMPONENT_TARGET_MASK
-
+        # ── Node targets: ALL nodes get ALL 5 targets ─────────────────
+        # No NaN masking during training — the GNN learns which design
+        # parameters affect which Hamiltonian targets through message passing.
+        # Targets are filled by the dataset builder (tutorial).
         n_comp = len(netlist.components)
-        y_node = torch.full((n_comp, NUM_NODE_TARGETS), float("nan"))
+        data["component"].y = torch.zeros(n_comp, NUM_NODE_TARGETS)
 
-        # Build target mask from component types
-        target_mask = torch.zeros(n_comp, NUM_NODE_TARGETS, dtype=torch.bool)
-        for i, ctype in enumerate(component_types):
-            mask = COMPONENT_TARGET_MASK.get(ctype, [False] * NUM_NODE_TARGETS)
-            target_mask[i] = torch.tensor(mask)
+        # Metadata: component types and names for inference readout
+        from squadds.ml.universal.model.gat_model import INFERENCE_READOUT
 
-        data["component"].y = y_node
-        data["component"].target_mask = target_mask
+        data["component"].inference_readout = [INFERENCE_READOUT.get(ct, []) for ct in component_types]
 
         # ── Physical edges (component <-> component) ──────────────────
         comp_name_to_idx = {comp.name: i for i, comp in enumerate(netlist.components)}
@@ -143,7 +140,6 @@ class UniversalGraphBuilder:
         if netlist.edges:
             phys_src, phys_dst = [], []
             phys_features = []
-            phys_targets = []
 
             for edge_spec in netlist.edges:
                 src_name = edge_spec.src.split(".")[0]
@@ -160,22 +156,14 @@ class UniversalGraphBuilder:
                 phys_src.extend([src_idx, dst_idx])
                 phys_dst.extend([dst_idx, src_idx])
                 phys_features.extend([feat_tensor, feat_tensor])
-                phys_targets.extend(
-                    [
-                        torch.full((NUM_EDGE_TARGETS,), float("nan")),
-                        torch.full((NUM_EDGE_TARGETS,), float("nan")),
-                    ]
-                )
 
             data["component", "physical", "component"].edge_index = torch.tensor([phys_src, phys_dst], dtype=torch.long)
             data["component", "physical", "component"].edge_attr = torch.stack(phys_features)
-            data["component", "physical", "component"].y = torch.stack(phys_targets)
         else:
             data["component", "physical", "component"].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["component", "physical", "component"].edge_attr = torch.empty(
                 (0, self.edge_extractor.dim), dtype=torch.float
             )
-            data["component", "physical", "component"].y = torch.empty((0, NUM_EDGE_TARGETS), dtype=torch.float)
 
         # ── Virtual node ──────────────────────────────────────────────
         hub_embedding = compute_hub_embedding(component_polygons, layout.get("design_params", {}), global_features, R)

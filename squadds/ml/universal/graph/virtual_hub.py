@@ -108,19 +108,26 @@ def compute_hub_embedding(
 
     parts = [shape_tensor, moments, [param_sum, chip_area, metal_fill]]
 
-    # Global info (layer stack)
+    # Global info (layer stack) — fixed-size slot to prevent dim mismatches
+    global_vec = np.zeros(N_GLOBAL_SLOTS, dtype=np.float32)
     if global_info:
-        parts.append(np.array(list(global_info.values()), dtype=np.float32))
+        vals = list(global_info.values())
+        n = min(len(vals), N_GLOBAL_SLOTS)
+        global_vec[:n] = vals[:n]
+    parts.append(global_vec)
 
     return np.concatenate(parts).astype(np.float32)
 
 
+# Fixed number of global feature slots (zero-padded if fewer are provided)
+N_GLOBAL_SLOTS = 5
+
+
 def hub_embedding_dim(
     shape_resolution: int = DEFAULT_SHAPE_RESOLUTION,
-    n_global_features: int = 2,
 ) -> int:
     """Return the dimension of the hub node embedding."""
-    return shape_resolution * shape_resolution + MOMENT_DIM + 3 + n_global_features
+    return shape_resolution * shape_resolution + MOMENT_DIM + 3 + N_GLOBAL_SLOTS
 
 
 # ── Spatial edge features ─────────────────────────────────────────────
