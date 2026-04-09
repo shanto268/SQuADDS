@@ -1,112 +1,121 @@
-"""Edge feature extractor — geometric features from the micro-gap between two components.
+"""Edge feature extractor — geometric + coupling features between two components.
 
-Computes spatial relationship features from the physical proximity of
-two Shapely polygons, including gap distance, overlap metrics, and a
-rasterized interaction-window mask.
+Computes a rich edge feature vector encoding:
+1. Coupling type (one-hot: capacitive, galvanic, inductive)
+2. Center-to-center distance (dx, dy)
+3. Overlap geometry moments (area, perimeter, bbox_area)
+4. Overlap shape tensor (scale-invariant rasterized overlap region)
 """
 
 from __future__ import annotations
 
-from shapely.geometry import MultiPolygon, Polygon, box
+import numpy as np
+from shapely.geometry import MultiPolygon, Polygon
 
+from squadds.ml.universal.features.node_encoder import DEFAULT_SHAPE_RESOLUTION
 from squadds.ml.universal.features.rasterizer import rasterize_fast
 
+# Supported coupling types → one-hot indices
+COUPLING_TYPES = {"capacitive": 0, "galvanic": 1, "inductive": 2}
+NUM_COUPLING_TYPES = len(COUPLING_TYPES)
 
-class NoInteractionError(Exception):
-    """Raised when two polygons are too far apart to interact."""
+# Edge feature breakdown:
+#   3 (coupling one-hot) + 2 (dx, dy) + 3 (overlap moments) + R*R (overlap shape)
+EDGE_SCALAR_DIM = NUM_COUPLING_TYPES + 2 + 3  # = 8
+
+
+def edge_feature_dim(shape_resolution: int = DEFAULT_SHAPE_RESOLUTION) -> int:
+    """Return the total dimension of the edge feature vector."""
+    return EDGE_SCALAR_DIM + shape_resolution * shape_resolution
 
 
 def extract_edge_features(
     poly_a: Polygon | MultiPolygon,
     poly_b: Polygon | MultiPolygon,
-    padding: float = 50.0,
-    mask_resolution: int = 32,
-) -> dict:
-    """Extract geometric features from the gap between two components.
+    coupling_type: str = "capacitive",
+    shape_resolution: int = DEFAULT_SHAPE_RESOLUTION,
+) -> np.ndarray:
+    """Compute edge features between two component polygons.
 
     Args:
-        poly_a: First component polygon (metal trace).
-        poly_b: Second component polygon (metal trace).
-        padding: Bounding-box expansion in μm for the interaction window.
-        mask_resolution: Resolution of the interaction window mask.
+        poly_a: First component polygon.
+        poly_b: Second component polygon.
+        coupling_type: One of ``"capacitive"``, ``"galvanic"``, ``"inductive"``.
+        shape_resolution: Resolution for the overlap shape tensor.
 
     Returns:
-        Dictionary with keys:
-
-        * ``shortest_gap`` – minimum distance between the polygons (μm).
-        * ``overlap_length`` – length of the shared boundary region.
-        * ``metal_area`` – total metal area in the interaction window.
-        * ``void_area`` – total void area in the interaction window.
-        * ``mask_a`` – rasterized mask of poly_a in the window, shape
-          ``(mask_resolution, mask_resolution)``.
-        * ``mask_b`` – rasterized mask of poly_b in the window, shape
-          ``(mask_resolution, mask_resolution)``.
-        * ``window_bounds`` – ``(minx, miny, maxx, maxy)`` of the window.
-
-    Raises:
-        NoInteractionError: If the padded bounding boxes do not overlap.
+        ``np.ndarray`` of shape ``(edge_feature_dim,)`` with dtype ``float32``.
     """
     if isinstance(poly_a, MultiPolygon):
         poly_a = max(poly_a.geoms, key=lambda g: g.area)
     if isinstance(poly_b, MultiPolygon):
         poly_b = max(poly_b.geoms, key=lambda g: g.area)
 
-    # ── Interaction window ─────────────────────────────────────────────
-    bbox_a = box(*poly_a.bounds).buffer(padding)
-    bbox_b = box(*poly_b.bounds).buffer(padding)
+    # 1. Coupling type one-hot
+    coupling_vec = np.zeros(NUM_COUPLING_TYPES, dtype=np.float32)
+    idx = COUPLING_TYPES.get(coupling_type, 0)
+    coupling_vec[idx] = 1.0
 
-    window = bbox_a.intersection(bbox_b)
-    if window.is_empty:
-        raise NoInteractionError(
-            f"Polygons are too far apart (>{padding}μm padding). BBox A: {poly_a.bounds}, BBox B: {poly_b.bounds}"
-        )
+    # 2. Center-to-center distance
+    ca = poly_a.centroid
+    cb = poly_b.centroid
+    dx = np.float32(cb.x - ca.x)
+    dy = np.float32(cb.y - ca.y)
 
-    # ── Geometric metrics ──────────────────────────────────────────────
-    shortest_gap = poly_a.distance(poly_b)
+    # 3. Overlap geometry
+    #    For non-galvanic: use buffer-expanded intersection to capture the gap region
+    #    For galvanic: direct intersection (shared boundary)
+    if coupling_type == "galvanic":
+        overlap = poly_a.intersection(poly_b)
+    else:
+        # Buffer both polygons slightly to capture the near-field gap
+        buf_a = poly_a.buffer(50.0)
+        buf_b = poly_b.buffer(50.0)
+        overlap = buf_a.intersection(buf_b)
 
-    # Clip polygons to the interaction window
-    clipped_a = poly_a.intersection(window)
-    clipped_b = poly_b.intersection(window)
+    if overlap.is_empty:
+        overlap_area = np.float32(0.0)
+        overlap_perimeter = np.float32(0.0)
+        overlap_bbox_area = np.float32(0.0)
+        overlap_shape = np.zeros(shape_resolution * shape_resolution, dtype=np.float32)
+    else:
+        overlap_area = np.float32(overlap.area)
+        overlap_perimeter = np.float32(overlap.length)
+        ominx, ominy, omaxx, omaxy = overlap.bounds
+        overlap_bbox_area = np.float32((omaxx - ominx) * (omaxy - ominy))
+        # 4. Scale-invariant overlap shape tensor
+        overlap_shape = rasterize_fast(overlap, resolution=shape_resolution).flatten()
 
-    metal_area = clipped_a.area + clipped_b.area
+    scalars = np.array(
+        [*coupling_vec, dx, dy, overlap_area, overlap_perimeter, overlap_bbox_area],
+        dtype=np.float32,
+    )
 
-    window_area = window.area
-    void_area = max(0, window_area - metal_area)
-
-    # Overlap length: length of shared boundary (if polygons touch/overlap)
-    overlap = clipped_a.intersection(clipped_b)
-    overlap_length = overlap.length if not overlap.is_empty else 0.0
-
-    # ── Rasterize interaction window ───────────────────────────────────
-    mask_a = rasterize_fast(clipped_a, resolution=mask_resolution)
-    mask_b = rasterize_fast(clipped_b, resolution=mask_resolution)
-
-    return {
-        "shortest_gap": shortest_gap,
-        "overlap_length": overlap_length,
-        "metal_area": metal_area,
-        "void_area": void_area,
-        "mask_a": mask_a,
-        "mask_b": mask_b,
-        "window_bounds": window.bounds,
-    }
+    return np.concatenate([scalars, overlap_shape]).astype(np.float32)
 
 
 class EdgeFeatureExtractor:
-    """Class wrapper for edge geometric feature extraction."""
+    """Stateless class wrapper for edge feature extraction."""
 
-    def __init__(self, padding: float = 50.0, mask_resolution: int = 32):
-        self.padding = padding
-        self.mask_resolution = mask_resolution
+    def __init__(self, shape_resolution: int = DEFAULT_SHAPE_RESOLUTION):
+        self.shape_resolution = shape_resolution
 
-    def extract(self, poly_a: Polygon | MultiPolygon, poly_b: Polygon | MultiPolygon) -> dict:
-        """Extract features, handling no-interaction gracefully for the batch builder."""
-        try:
-            return extract_edge_features(poly_a, poly_b, padding=self.padding, mask_resolution=self.mask_resolution)
-        except NoInteractionError:
-            return {
-                "shortest_gap": float("inf"),
-                "overlap_length": 0.0,
-                "metal_area": 0.0,
-                "void_area": 0.0,
-            }
+    def extract(
+        self,
+        poly_a: Polygon | MultiPolygon,
+        poly_b: Polygon | MultiPolygon,
+        coupling_type: str = "capacitive",
+    ) -> np.ndarray:
+        """Extract edge features between two polygons.
+
+        Returns:
+            ``np.ndarray`` of shape ``(edge_feature_dim,)`` with dtype ``float32``.
+        """
+        return extract_edge_features(
+            poly_a, poly_b, coupling_type=coupling_type, shape_resolution=self.shape_resolution
+        )
+
+    @property
+    def dim(self) -> int:
+        """Total edge feature dimension."""
+        return edge_feature_dim(self.shape_resolution)

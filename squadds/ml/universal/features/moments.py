@@ -14,6 +14,8 @@ def compute_moments(polygon: Polygon | MultiPolygon) -> np.ndarray:
     """Compute 8 geometric features from a Shapely polygon.
 
     All values are computed **directly** from the polygon geometry.
+    The vector is fully scale-descriptive: it captures size (area, perimeter,
+    bbox dims) and shape ratios (fill_factor, compactness, aspect_ratio).
 
     Returns:
         ``np.ndarray`` of shape ``(8,)`` containing:
@@ -23,81 +25,42 @@ def compute_moments(polygon: Polygon | MultiPolygon) -> np.ndarray:
         ======  ======================  ================================
         0       area                    ``polygon.area``
         1       perimeter               ``polygon.length``
-        2       aspect_ratio            ``bbox_width / bbox_height``
-        3       fill_factor             ``area / bbox_area``
-        4       centroid_x              ``polygon.centroid.x``
-        5       centroid_y              ``polygon.centroid.y``
-        6       I_x (2nd moment, x)     Numerical integration
-        7       I_y (2nd moment, y)     Numerical integration
+        2       bbox_area               ``bbox_width * bbox_height``
+        3       bbox_perimeter          ``2 * (bbox_width + bbox_height)``
+        4       fill_factor             ``area / bbox_area``
+        5       compactness             ``perimeter / bbox_perimeter``
+        6       aspect_ratio            ``bbox_width / bbox_height``
+        7       circularity             ``4pi * area / perimeter^2``
         ======  ======================  ================================
     """
     if isinstance(polygon, MultiPolygon):
-        # Merge into largest component for consistent moments
         polygon = max(polygon.geoms, key=lambda g: g.area)
 
     if polygon.is_empty:
         return np.zeros(8, dtype=np.float32)
 
-    # ── Basic properties ───────────────────────────────────────────────
     area = polygon.area
     perimeter = polygon.length
 
-    # Bounding box
     minx, miny, maxx, maxy = polygon.bounds
     bbox_width = maxx - minx
     bbox_height = maxy - miny
 
-    aspect_ratio = bbox_width / bbox_height if bbox_height > 1e-10 else 1.0
     bbox_area = bbox_width * bbox_height
+    bbox_perimeter = 2 * (bbox_width + bbox_height)
+
     fill_factor = area / bbox_area if bbox_area > 1e-10 else 0.0
+    compactness = perimeter / bbox_perimeter if bbox_perimeter > 1e-10 else 0.0
+    aspect_ratio = bbox_width / bbox_height if bbox_height > 1e-10 else 1.0
+    circularity = (4 * np.pi * area) / (perimeter**2) if perimeter > 1e-10 else 0.0
 
-    # Centroid (position information retained)
-    cx = polygon.centroid.x
-    cy = polygon.centroid.y
-
-    # ── Second moments of area (Ix, Iy) ───────────────────────────────
-    # Computed via the shoelace-like formula over the exterior ring
-    Ix, Iy = _compute_second_moments(polygon, cx, cy)
-
-    return np.array([area, perimeter, aspect_ratio, fill_factor, cx, cy, Ix, Iy], dtype=np.float32)
+    return np.array(
+        [area, perimeter, bbox_area, bbox_perimeter, fill_factor, compactness, aspect_ratio, circularity],
+        dtype=np.float32,
+    )
 
 
-def _compute_second_moments(
-    polygon: Polygon,
-    cx: float,
-    cy: float,
-) -> tuple[float, float]:
-    """Compute second moments of area about the centroid.
-
-    Uses the Green's theorem formulation over the polygon boundary.
-
-    Args:
-        polygon: Input Shapely polygon.
-        cx: Centroid x-coordinate.
-        cy: Centroid y-coordinate.
-
-    Returns:
-        ``(Ix, Iy)`` — second moments of area about the centroid.
-    """
-    coords = np.array(polygon.exterior.coords)
-    x = coords[:, 0] - cx
-    y = coords[:, 1] - cy
-    n = len(x) - 1  # last point duplicates first
-
-    # Shoelace-based second moment computation
-    # Ix = Σ (x_i * y_{i+1} - x_{i+1} * y_i) * (y_i² + y_i*y_{i+1} + y_{i+1}²) / 12
-    # Iy = Σ (x_i * y_{i+1} - x_{i+1} * y_i) * (x_i² + x_i*x_{i+1} + x_{i+1}²) / 12
-    Ix = 0.0
-    Iy = 0.0
-    for i in range(n):
-        cross = x[i] * y[i + 1] - x[i + 1] * y[i]
-        Ix += cross * (y[i] ** 2 + y[i] * y[i + 1] + y[i + 1] ** 2)
-        Iy += cross * (x[i] ** 2 + x[i] * x[i + 1] + x[i + 1] ** 2)
-
-    Ix = abs(Ix) / 12.0
-    Iy = abs(Iy) / 12.0
-
-    return Ix, Iy
+MOMENT_DIM = 8
 
 
 def moment_names() -> list[str]:
@@ -105,10 +68,10 @@ def moment_names() -> list[str]:
     return [
         "area",
         "perimeter",
-        "aspect_ratio",
+        "bbox_area",
+        "bbox_perimeter",
         "fill_factor",
-        "centroid_x",
-        "centroid_y",
-        "I_x",
-        "I_y",
+        "compactness",
+        "aspect_ratio",
+        "circularity",
     ]
