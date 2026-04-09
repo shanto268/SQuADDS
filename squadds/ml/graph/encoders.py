@@ -145,6 +145,28 @@ class GeometricEncoder(layers.Layer):
         self.last_rho_out = None
         self.last_geometry_prediction = None
 
+    def build(self, input_shape):
+        # Keras may call build() with only the first positional input shape for
+        # multi-argument layers, so we rely on the configured dimensions here.
+        self.embedding.build((None, self.k_max))
+
+        if self.aggregation == "deepsets":
+            self.phi.build((None, self.embed_dim))
+            rho_input_dim = self.phi.units
+            self.rho.build((None, rho_input_dim))
+            rho_output_dim = self.rho.units
+        else:
+            rho_output_dim = self.embed_dim
+
+        combined_dim = rho_output_dim + 2
+        self.out_dense.build((None, combined_dim))
+
+        if self.geometry_aux_hidden is not None and self.geometry_aux_out is not None:
+            self.geometry_aux_hidden.build((None, rho_output_dim))
+            self.geometry_aux_out.build((None, self.geometry_aux_hidden.units))
+
+        super().build(input_shape)
+
     def call(self, key_ids, values, area, perimeter):
         """Forward pass.
 

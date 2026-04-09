@@ -91,6 +91,25 @@ class TestGeometricEncoder:
         assert enc.losses
         assert enc.last_geometry_prediction is not None
 
+    def test_geometry_auxiliary_layers_build_explicitly(self):
+        enc = GeometricEncoder(
+            vocab_size=32,
+            embed_dim=8,
+            phi_dim=12,
+            rho_dim=10,
+            out_dim=16,
+            k_max=5,
+            aggregation="deepsets",
+            geometry_aux_loss_weight=0.1,
+            geometry_aux_hidden_dim=6,
+        )
+        enc.build(((None, 5), (None, 5), (None, 1), (None, 1)))
+        assert enc.embedding.built
+        assert enc.phi is not None and enc.phi.built
+        assert enc.rho is not None and enc.rho.built
+        assert enc.geometry_aux_hidden is not None and enc.geometry_aux_hidden.built
+        assert enc.geometry_aux_out is not None and enc.geometry_aux_out.built
+
 
 # ---------------------------------------------------------------------------
 # PortEncoder  —  input dim is now 5
