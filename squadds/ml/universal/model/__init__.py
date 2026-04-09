@@ -1,1 +1,1 @@
-"""GATv2 model, prediction heads, and loss functions."""
+"""Universal GNN model implementations."""
