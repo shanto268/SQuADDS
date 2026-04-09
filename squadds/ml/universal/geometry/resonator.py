@@ -4,7 +4,10 @@ Faithfully reproduces:
 1. The ``second_cpw`` L-shaped coupling arm from
    ``CoupledLineTee.make()`` (coupled_line_tee.py L98-106).
 2. The meandered CPW path from ``RouteMeander.connect_meandered()``
-   (meandered.py L103-311).
+   (meandered.py L103-311), including the exact interleaving pattern,
+   snap-to-grid, lead-in/lead-out, and jog extensions.
+3. Corner filleting (rounded corners) matching qiskit-metal's fillet
+   parameter, which rounds each 90° bend into a smooth arc.
 
 The resonator polygon is the union of the meander path and the CLT
 coupling arm, buffered to the CPW trace width.
@@ -13,9 +16,150 @@ coupling arm, buffered to the CPW trace width.
 from __future__ import annotations
 
 import numpy as np
+from numpy.linalg import norm
 from shapely import affinity
 from shapely.geometry import LineString, Polygon
-from shapely.ops import unary_union
+
+# ── Utility functions (matching qiskit-metal) ──────────────────────────
+
+
+def _snap_unit_vector(vec: np.ndarray) -> np.ndarray:
+    """Snap a 2D unit vector to the nearest axis (qiskit-metal snap)."""
+    m = np.argmax(np.abs(vec))
+    v = np.array([0.0, 0.0])
+    v[m] = np.sign(vec[m])
+    return v
+
+
+def _rotate_vec(vec: np.ndarray, radians: float) -> np.ndarray:
+    """Rotate a 2D vector counter-clockwise by radians."""
+    c, s = np.cos(radians), np.sin(radians)
+    return np.array([c * vec[0] - s * vec[1], s * vec[0] + c * vec[1]])
+
+
+def _get_unit_vectors(
+    start_pos: np.ndarray,
+    end_pos: np.ndarray,
+    snap: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute forward and sideways unit vectors (matching QRoute.get_unit_vectors)."""
+    v = end_pos - start_pos
+    v_norm = norm(v)
+    if v_norm < 1e-10:
+        return np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    direction = v / v_norm
+    if snap:
+        direction = _snap_unit_vector(direction)
+    sideways = _rotate_vec(direction, np.pi / 2)
+    return direction, sideways
+
+
+def _get_index_for_side1_meander(num_root_pts: int) -> tuple[np.ndarray, int]:
+    """Exact copy of RouteMeander.get_index_for_side1_meander."""
+    num_2pts, odd = divmod(num_root_pts, 2)
+    x = np.array(range(num_2pts), dtype=int) * 4
+    z = np.zeros(num_2pts * 2, dtype=int)
+    z[::2] = x
+    z[1::2] = x + 1
+    return z, odd
+
+
+def _fillet_path(pts: np.ndarray, radius: float, segments_per_corner: int = 16) -> np.ndarray:
+    """Apply fillet (corner rounding) to a polyline, replacing each
+    sharp corner with an arc of the given radius.
+
+    This matches qiskit-metal's fillet behaviour, which rounds every
+    90° corner of the meander path into a smooth circular arc.
+
+    Args:
+        pts: (N, 2) array of path vertices.
+        radius: Fillet radius in μm. Corners where the adjacent
+            segments are shorter than ``radius`` are left sharp.
+        segments_per_corner: Number of arc segments per 90° corner.
+
+    Returns:
+        (M, 2) array of the filleted path (M >= N).
+    """
+    if radius <= 0 or len(pts) < 3:
+        return pts
+
+    result = [pts[0].copy()]
+
+    for i in range(1, len(pts) - 1):
+        p_prev = pts[i - 1]
+        p_curr = pts[i]
+        p_next = pts[i + 1]
+
+        # Vectors from corner to neighbours
+        v1 = p_prev - p_curr
+        v2 = p_next - p_curr
+
+        len1 = norm(v1)
+        len2 = norm(v2)
+
+        # Skip degenerate segments
+        if len1 < 1e-6 or len2 < 1e-6:
+            result.append(p_curr.copy())
+            continue
+
+        # Clamp radius so the arc doesn't exceed half the segment length
+        r = min(radius, len1 / 2.0, len2 / 2.0)
+        if r < 1e-6:
+            result.append(p_curr.copy())
+            continue
+
+        # Unit vectors
+        u1 = v1 / len1
+        u2 = v2 / len2
+
+        # Angle between the two edges
+        cos_a = np.clip(np.dot(u1, u2), -1.0, 1.0)
+        angle = np.arccos(cos_a)
+
+        # Near straight or near u-turn: skip fillet
+        if angle < 1e-6 or abs(angle - np.pi) < 1e-6:
+            result.append(p_curr.copy())
+            continue
+
+        # Tangent points
+        t1 = p_curr + u1 * r
+        t2 = p_curr + u2 * r
+
+        # Arc centre: offset from corner along the angle bisector
+        bisector = u1 + u2
+        bisector_len = norm(bisector)
+        if bisector_len < 1e-10:
+            result.append(p_curr.copy())
+            continue
+        bisector = bisector / bisector_len
+
+        # Distance from corner to arc centre
+        d_center = r / np.sin(angle / 2)
+        center = p_curr + bisector * d_center
+
+        # Generate arc points from t1 to t2 around center
+        a1 = np.arctan2(t1[1] - center[1], t1[0] - center[0])
+        a2 = np.arctan2(t2[1] - center[1], t2[0] - center[0])
+
+        # Determine sweep direction (shortest arc)
+        da = a2 - a1
+        if da > np.pi:
+            da -= 2 * np.pi
+        elif da < -np.pi:
+            da += 2 * np.pi
+
+        # Number of segments proportional to arc angle
+        n_segs = max(2, int(abs(da) / (np.pi / 2) * segments_per_corner))
+
+        for j in range(n_segs + 1):
+            t = j / n_segs
+            angle_j = a1 + t * da
+            arc_pt = center + r * np.array([np.cos(angle_j), np.sin(angle_j)])
+            result.append(arc_pt)
+
+    result.append(pts[-1].copy())
+    return np.array(result)
+
 
 # ── CLT second_cpw (coupling arm) ─────────────────────────────────────
 
@@ -65,11 +209,9 @@ def _make_clt_second_cpw(
     etch: Polygon = etch_line.buffer((second_width + 2 * second_gap) / 2, cap_style="flat", join_style="mitre")
 
     # Pin at the bottom of the L
-    pin_pos_raw = np.array(pts[-1])
+    pin_pos_raw = np.array(pts[-1], dtype=float)
     # Direction: pointing downward (away from the coupling region)
     pin_dir_raw = np.array([0.0, -1.0])
-    if mirror:
-        pin_dir_raw = np.array([0.0, -1.0])
 
     # Rotate and translate
     geoms = [centerline, trace, etch]
@@ -80,8 +222,8 @@ def _make_clt_second_cpw(
     theta = np.radians(orientation)
     rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
     offset = np.array([pos_x, pos_y])
-    pin_pos = tuple(rot @ pin_pos_raw + offset)
-    pin_dir = tuple(rot @ pin_dir_raw)
+    pin_pos = rot @ pin_pos_raw + offset
+    pin_dir = rot @ pin_dir_raw
 
     return {
         "centerline": centerline,
@@ -92,196 +234,174 @@ def _make_clt_second_cpw(
     }
 
 
-# ── Meander routing ───────────────────────────────────────────────────
+# ── Lead generation (matching QRouteLead) ──────────────────────────────
 
 
-def _generate_meander_points(
+def _build_lead(
+    pin_pos: np.ndarray,
+    pin_dir: np.ndarray,
+    straight: float,
+    jog_extension: list[tuple[str, float]] | None = None,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Build a lead (straight + jogs) from a pin.
+
+    Args:
+        pin_pos: Pin starting position.
+        pin_dir: Pin direction (outward normal).
+        straight: Length of the initial straight segment.
+        jog_extension: List of (turn, length) tuples for jogs. e.g.
+            [("R90", 100)].
+
+    Returns:
+        (pts, direction, total_length) — points array (N,2), final direction,
+        and total path length.
+    """
+    pts = [pin_pos.copy()]
+    direction = pin_dir.copy()
+    total = 0.0
+
+    # Minimum lead length
+    lead_len = max(straight, 5.0)  # trace_width/2 fallback
+    tip = pts[-1] + direction * lead_len
+    pts.append(tip)
+    total += lead_len
+
+    # Jog extensions
+    if jog_extension:
+        for turn, length in jog_extension:
+            # Parse turn direction
+            if isinstance(turn, str):
+                if turn.startswith("R"):
+                    angle_str = turn[1:] if len(turn) > 1 else "90"
+                    angle_deg = float(angle_str)
+                    direction = _rotate_vec(direction, -np.radians(angle_deg))
+                elif turn.startswith("L"):
+                    angle_str = turn[1:] if len(turn) > 1 else "90"
+                    angle_deg = float(angle_str)
+                    direction = _rotate_vec(direction, np.radians(angle_deg))
+                else:
+                    direction = _rotate_vec(direction, np.radians(float(turn)))
+            else:
+                direction = _rotate_vec(direction, np.radians(float(turn)))
+
+            tip = pts[-1] + direction * length
+            pts.append(tip)
+            total += length
+
+    return np.array(pts), direction, total
+
+
+# ── Meander routing (faithful to RouteMeander.connect_meandered) ───────
+
+
+def _connect_meandered(
     start_pos: np.ndarray,
     start_dir: np.ndarray,
     end_pos: np.ndarray,
     end_dir: np.ndarray,
-    total_length: float,
+    length_meander: float,
     spacing: float,
     asymmetry: float = 0.0,
-    start_straight: float = 100.0,
-    end_straight: float = 50.0,
-    jog_length: float = 0.0,
+    snap: bool = True,
 ) -> np.ndarray:
-    """Generate meander path points between two pin positions.
+    """Generate meander points between two endpoints.
 
-    Implements the core algorithm from ``RouteMeander.connect_meandered()``
-    adapted for standalone Shapely use (no QRoute dependency).
+    This is a faithful reproduction of RouteMeander.connect_meandered(),
+    using the exact same interleaving logic and index patterns.
 
     Args:
-        start_pos: Starting pin position ``(x, y)``.
-        start_dir: Unit direction vector at start pin.
-        end_pos: Ending pin position ``(x, y)``.
-        end_dir: Unit direction vector at end pin.
-        total_length: Target total path length.
-        spacing: Minimum spacing between adjacent meander curves.
-        asymmetry: Offset of meander centre-line from the direct axis.
-        start_straight: Lead-in straight segment length.
-        end_straight: Lead-out straight segment length.
-        jog_length: Length of the initial jog (perpendicular step after lead-in).
+        start_pos: Position of meander start (after lead-in).
+        start_dir: Direction at meander start.
+        end_pos: Position of meander end (before lead-out).
+        end_dir: Direction at meander end.
+        length_meander: Total path length to distribute in the meander.
+        spacing: Spacing between adjacent meander curves.
+        asymmetry: Offset of meander center-line.
+        snap: Whether to snap to grid.
 
     Returns:
-        ``(M, 2)`` array of path coordinates.
+        (M, 2) array of meander path coordinates.
     """
-    all_points = [start_pos.copy()]
-    consumed_length = 0.0
+    # ── Coordinate system ──────────────────────────────────────────────
+    forward, sideways = _get_unit_vectors(start_pos, end_pos, snap=snap)
 
-    # ── Lead-in ────────────────────────────────────────────────────────
-    if start_straight > 0:
-        lead_in_end = start_pos + start_dir * start_straight
-        all_points.append(lead_in_end)
-        consumed_length += start_straight
+    # Calculate distances
+    dist = end_pos - start_pos
+    if snap:
+        length_direct = abs(np.dot(dist, forward))
     else:
-        lead_in_end = start_pos.copy()
-
-    # ── Jog (perpendicular step) ───────────────────────────────────────
-    if jog_length > 0:
-        # Jog is perpendicular to start_dir (R90 = rotate 90° CCW)
-        perp = np.array([-start_dir[1], start_dir[0]])
-        jog_end = lead_in_end + perp * jog_length
-        all_points.append(jog_end)
-        consumed_length += jog_length
-        meander_start = jog_end
-    else:
-        meander_start = lead_in_end
-
-    # ── Lead-out ───────────────────────────────────────────────────────
-    lead_out_start = end_pos + end_dir * end_straight
-    consumed_length += end_straight
-
-    # ── Meander computation ────────────────────────────────────────────
-    length_for_meander = total_length - consumed_length
-
-    # Determine forward and sideways unit vectors
-    dist_vec = lead_out_start - meander_start
-    dist_norm = np.linalg.norm(dist_vec)
-
-    if dist_norm < 1e-6:
-        # Start and end are coincident — just connect directly
-        all_points.append(lead_out_start)
-        all_points.append(end_pos.copy())
-        return np.array(all_points)
-
-    forward = dist_vec / dist_norm
-    sideways = np.array([-forward[1], forward[0]])  # 90° CCW from forward
-
-    length_direct = dist_norm
-
-    if length_for_meander <= length_direct:
-        # Not enough length to meander — straight connection
-        all_points.append(lead_out_start)
-        all_points.append(end_pos.copy())
-        return np.array(all_points)
+        length_direct = norm(dist)
 
     # Number of meander segments
-    meander_number = max(1, int(np.floor(length_direct / spacing)))
+    meander_number = int(np.floor(length_direct / spacing))
+    if meander_number < 1:
+        return np.empty((0, 2), float)
 
-    # Ensure parity: start_dir and end_dir sideways components
+    # Adjust parity (matching L165-176 of meandered.py)
     start_sw = np.dot(start_dir, sideways)
     end_sw = np.dot(end_dir, sideways)
-
-    if start_sw * end_sw > 0 and (meander_number % 2) == 0:
+    if round(start_sw * end_sw, 10) > 0 and (meander_number % 2) == 0:
         meander_number -= 1
-    elif start_sw * end_sw < 0 and (meander_number % 2) == 1:
+    elif round(start_sw * end_sw, 10) < 0 and (meander_number % 2) == 1:
         meander_number -= 1
 
     meander_number = max(1, meander_number)
 
-    # Perpendicular height to accommodate excess length
-    length_excess = length_for_meander - length_direct - 2 * abs(asymmetry)
-    length_perp = max(0, length_excess / (meander_number * 2.0))
-
-    # Determine first meander direction
+    # First meander direction (L178-192)
     if start_sw > 0:
         first_meander_sideways = True
     elif start_sw < 0:
         first_meander_sideways = False
     else:
-        first_meander_sideways = True
-
-    # ── Generate meander points ────────────────────────────────────────
-    # Root points along the forward axis
-    root_pts = np.array([forward * (spacing * i) for i in range(int(meander_number) + 1)])
-
-    # Add asymmetry offset
-    asymmetry_vec = sideways * asymmetry
-    root_pts = root_pts + asymmetry_vec
-
-    # Top and bottom deviation from root
-    side_shift = sideways * length_perp
-    top_pts = root_pts + side_shift
-    bot_pts = root_pts - side_shift
-
-    # Interleave into meander path
-    n_roots = len(root_pts)
-    pts = []
-
-    for i in range(n_roots):
-        if i == n_roots - 1:
-            # Last root point — anchor
-            pts.append(root_pts[i])
-            break
-
-        if (i % 2 == 0) == first_meander_sideways:
-            pts.append(top_pts[i])
+        if end_sw > 0:
+            first_meander_sideways = (meander_number % 2) == 1
+        elif end_sw < 0:
+            first_meander_sideways = (meander_number % 2) == 0
         else:
-            pts.append(bot_pts[i])
+            first_meander_sideways = True
 
-        if i + 1 < n_roots:
-            if ((i + 1) % 2 == 0) == first_meander_sideways:
-                pts.append(top_pts[i + 1])
-            else:
-                pts.append(bot_pts[i + 1])
+    # Perpendicular height (L194-197)
+    length_excess = length_meander - length_direct - 2 * abs(asymmetry)
+    length_perp = max(0, length_excess / (meander_number * 2.0))
 
-    # Deduplicate consecutive identical points
-    meander_pts = [pts[0]]
-    for p in pts[1:]:
-        if np.linalg.norm(p - meander_pts[-1]) > 1e-6:
-            meander_pts.append(p)
+    # ── Root points along forward axis (L199-205) ──────────────────────
+    middle_points = np.array([forward] * int(meander_number + 1))
+    scale_bys = spacing * np.arange(int(meander_number + 1))[:, None]
+    middle_points = scale_bys * middle_points
 
-    # Translate meander points to meander_start position
-    meander_pts = np.array(meander_pts) + meander_start
+    # ── Top and bottom deviation (L222-227) ────────────────────────────
+    side_shift_vecs = np.array([sideways * length_perp] * len(middle_points))
+    asymmetry_vecs = np.array([sideways * asymmetry] * len(middle_points))
+    root_pts = middle_points + asymmetry_vecs
+    top_pts = root_pts + side_shift_vecs
+    bot_pts = root_pts - side_shift_vecs
 
-    all_points.extend(meander_pts.tolist())
+    # ── Interleave into meander path (L237-249) ────────────────────────
+    # This is the exact qiskit-metal interleaving algorithm
+    pts = np.zeros((len(top_pts) + len(bot_pts) + 1 - 2, 2))
+    pts[-1, :] = root_pts[-1, :]
 
-    # ── Lead-out ───────────────────────────────────────────────────────
-    all_points.append(lead_out_start.tolist())
-    all_points.append(end_pos.tolist())
+    idx_side1_meander, odd = _get_index_for_side1_meander(len(root_pts))
+    idx_side2_meander = 2 + idx_side1_meander[: None if odd else -2]
 
-    return np.array(all_points)
+    if first_meander_sideways:
+        pts[idx_side1_meander, :] = top_pts[: -1 if odd else None]
+        pts[idx_side2_meander, :] = bot_pts[1 : None if odd else -1]
+    else:
+        pts[idx_side1_meander, :] = bot_pts[: -1 if odd else None]
+        pts[idx_side2_meander, :] = top_pts[1 : None if odd else -1]
 
+    # Move to start position (L249)
+    pts += start_pos
 
-def _smooth_path(points: np.ndarray, fillet: float) -> LineString:
-    """Apply corner rounding to a polyline via Shapely buffer trick.
+    # ── Snap adjustments (L251-281) ────────────────────────────────────
+    if snap:
+        fwd_idx = int(abs(forward[0]))  # 0 if forward is x-aligned, 1 if y-aligned
+        # Align last root point's forward coord with end position
+        if np.dot(start_dir, end_dir) >= 0 or np.dot(forward, start_dir) > 0:
+            pts[-1, fwd_idx] = end_pos[fwd_idx]
 
-    A true fillet requires computing arc segments at each corner.  For
-    computational simplicity we use the Shapely ``buffer → erode`` trick:
-    buffer the polyline by ``fillet``, then erode back.  This rounds corners
-    nicely for visualization, though the path length changes slightly.
-
-    For exact fillet arcs we would need to compute tangent circles at each
-    corner, which is doable but significantly more code.  Since the user
-    verified that a faithful *looking* meander is acceptable, this approach
-    produces visually accurate results.
-    """
-    line = LineString(points)
-    if fillet <= 0 or len(points) < 3:
-        return line
-
-    # Buffer-erode rounding
-    try:
-        rounded = line.buffer(fillet, join_style="round").buffer(-fillet + 0.1, join_style="round")
-        # Extract the longest ring as the new center-line approximation
-        if rounded.is_empty:
-            return line
-        exterior = rounded.exterior
-        return exterior
-    except Exception:
-        return line
+    return pts
 
 
 # ── Public API ─────────────────────────────────────────────────────────
@@ -294,25 +414,25 @@ def make_resonator(
     start_direction: tuple,
     end_pos: tuple | None = None,
     end_direction: tuple | None = None,
-    trace_width: float = 10.0,
-    trace_gap: float = 6.0,
-    second_width: float = 10.0,
-    second_gap: float = 6.0,
-    prime_width: float = 10.0,
-    prime_gap: float = 6.0,
-    coupling_space: float = 3.0,
-    down_length: float = 100.0,
-    open_termination: bool = True,
+    trace_width: float = 11.7,
+    trace_gap: float = 5.1,
+    second_width: float = 11.7,
+    second_gap: float = 5.1,
+    prime_width: float = 11.7,
+    prime_gap: float = 5.1,
+    coupling_space: float = 7.9,
+    down_length: float = 50.0,
+    open_termination: bool = False,
     mirror: bool = False,
     spacing: float = 100.0,
     asymmetry: float | None = None,
     fillet: float = 49.9,
-    start_straight: float = 100.0,
+    start_straight: float = 50.0,
     end_straight: float = 50.0,
-    jog_length: float | None = None,
+    jog_extension: list[tuple[str, float]] | None = None,
     clt_pos_x: float = 0.0,
     clt_pos_y: float = 0.0,
-    clt_orientation: float = 180.0,
+    clt_orientation: float = -90.0,
 ) -> dict:
     """Generate Shapely polygons for a complete CPW resonator.
 
@@ -323,14 +443,12 @@ def make_resonator(
     All dimensions in **micrometres**.
 
     Args:
-        total_length: Target total resonator length.  For CLT coupler type
-            this is typically ``parquet_total_length / 2``.
+        total_length: Target total resonator length.
         coupling_length: CLT coupling_length parameter.
         start_pos: ``(x, y)`` of the claw pin (meander start).
         start_direction: Unit direction vector at the claw pin.
-        end_pos: ``(x, y)`` of the CLT second_end pin.  If ``None``,
-            computed from the CLT parameters.
-        end_direction: Unit direction at the CLT pin.  If ``None``, computed.
+        end_pos: ``(x, y)`` of the CLT second_end pin. If None, auto-computed.
+        end_direction: Direction at the CLT pin. If None, auto-computed.
         trace_width: CPW trace width for the meander.
         trace_gap: CPW gap width for the meander.
         second_width: CLT second CPW trace width.
@@ -339,39 +457,30 @@ def make_resonator(
         prime_gap: CLT prime CPW gap width (feedline).
         coupling_space: Ground gap between resonator and feedline CPWs.
         down_length: Length of the CLT coupling arm's vertical segment.
-        open_termination: Whether the CLT termination is open or shorted.
+        open_termination: Whether the CLT termination is open.
         mirror: Whether the CLT layout is mirrored.
         spacing: Meander curve spacing.
-        asymmetry: Meander asymmetry.  If ``None``, computed as
-            ``coupling_length / 3`` (matching SQuADDS default).
-        fillet: Corner rounding radius.
+        asymmetry: Meander asymmetry. If None, computed from coupling_length.
+        fillet: Corner rounding radius (49.9μm matches SQuADDS default).
         start_straight: Lead-in straight length.
         end_straight: Lead-out straight length.
-        jog_length: Jog length after lead-in.  If ``None``, computed as
-            ``coupling_length / 1.5`` when ``coupling_length > 150``.
+        jog_extension: Lead-in jog extension. If None, computed from coupling_length.
+            Format: [("R90", length_um), ...]
         clt_pos_x: CoupledLineTee centre X.
         clt_pos_y: CoupledLineTee centre Y.
         clt_orientation: CoupledLineTee orientation in degrees.
 
     Returns:
-        Dictionary with keys:
-
-        * ``trace`` – :class:`Polygon`, combined resonator metal.
-        * ``etch`` – :class:`Polygon`, combined etch region.
-        * ``centerline`` – :class:`LineString`, the CPW centre path.
-        * ``meander_points`` – ``(M, 2)`` array of meander path coords.
-        * ``clt_arm`` – dict with CLT second_cpw details.
-        * ``position`` – centroid ``(x, y)`` of the trace polygon.
-        * ``start_pos`` – meander start position.
-        * ``end_pos`` – CLT second_end position.
-        * ``path_length`` – actual computed path length.
+        Dictionary with geometry and metadata.
     """
     # ── Compute defaults ───────────────────────────────────────────────
-    if asymmetry is None:
-        asymmetry = coupling_length / 3.0
+    adj_distance = coupling_length if coupling_length > 150 else 0.0
 
-    if jog_length is None:
-        jog_length = coupling_length / 1.5 if coupling_length > 150 else 0.0
+    if asymmetry is None:
+        asymmetry = adj_distance / 3.0
+
+    if jog_extension is None and adj_distance > 0:
+        jog_extension = [("R90", adj_distance / 1.5)]
 
     # ── Generate CLT second_cpw ────────────────────────────────────────
     clt_arm = _make_clt_second_cpw(
@@ -391,65 +500,86 @@ def make_resonator(
 
     # The meander end is the CLT second_end pin
     if end_pos is None:
-        end_pos = clt_arm["pin_second_end"]
+        end_pos = tuple(clt_arm["pin_second_end"])
     if end_direction is None:
-        end_direction = clt_arm["pin_second_end_direction"]
+        end_direction = tuple(clt_arm["pin_second_end_direction"])
 
     start_pos_arr = np.array(start_pos, dtype=float)
     start_dir_arr = np.array(start_direction, dtype=float)
     end_pos_arr = np.array(end_pos, dtype=float)
     end_dir_arr = np.array(end_direction, dtype=float)
 
-    # ── Account for CLT arm length in total budget ─────────────────────
-    clt_arm_length = clt_arm["centerline"].length
-    meander_total = total_length - clt_arm_length
+    # ── Build lead-in (from claw pin) ──────────────────────────────────
+    head_pts, head_dir, head_length = _build_lead(start_pos_arr, start_dir_arr, start_straight, jog_extension)
 
-    # ── Generate meander points ────────────────────────────────────────
-    meander_pts = _generate_meander_points(
-        start_pos=start_pos_arr,
-        start_dir=start_dir_arr,
-        end_pos=end_pos_arr,
-        end_dir=end_dir_arr,
-        total_length=max(meander_total, 0),
+    # ── Build lead-out (from CLT second_end pin) ───────────────────────
+    tail_pts, tail_dir, tail_length = _build_lead(end_pos_arr, end_dir_arr, end_straight)
+
+    # ── Meander computation ────────────────────────────────────────────
+    meander_start = head_pts[-1]
+    meander_start_dir = head_dir
+    meander_end = tail_pts[-1]
+    meander_end_dir = tail_dir
+
+    # Account for CLT arm length in total budget
+    clt_arm_length = clt_arm["centerline"].length
+    length_for_meander = total_length - head_length - tail_length - clt_arm_length
+
+    meander_pts = _connect_meandered(
+        start_pos=meander_start,
+        start_dir=meander_start_dir,
+        end_pos=meander_end,
+        end_dir=meander_end_dir,
+        length_meander=max(length_for_meander, 0),
         spacing=spacing,
         asymmetry=asymmetry,
-        start_straight=start_straight,
-        end_straight=end_straight,
-        jog_length=jog_length,
+        snap=True,
     )
 
-    # ── Create meander trace polygon ───────────────────────────────────
-    if len(meander_pts) >= 2:
-        meander_line = LineString(meander_pts)
-        meander_trace: Polygon = meander_line.buffer(trace_width / 2, cap_style="flat", join_style="mitre")
-        meander_etch: Polygon = meander_line.buffer(
-            (trace_width + 2 * trace_gap) / 2, cap_style="flat", join_style="mitre"
-        )
+    # ── Assemble full path: head + meander + tail(reversed) + CLT arm ──
+    # The CLT arm centerline is appended so the L-shaped corner also
+    # gets the fillet treatment (smooth bend instead of sharp 90°).
+    path_segments = [head_pts]
+    if len(meander_pts) > 0:
+        path_segments.append(meander_pts)
+    path_segments.append(tail_pts[::-1])  # tail is reversed (like QRoute)
+
+    # Append CLT arm centerline (in world coordinates, from pin → coupling start)
+    # The arm centerline is stored as a Shapely LineString in world coords.
+    # We traverse it in reverse (from pin end → far end) since the meander
+    # path arrives at the pin_second_end.
+    clt_cl_coords = np.array(clt_arm["centerline"].coords)
+    # The pin_second_end is the last point of the CLT arm.  We need to
+    # walk from there backward through the L to the coupling start.
+    clt_cl_reversed = clt_cl_coords[::-1]
+    path_segments.append(clt_cl_reversed)
+
+    all_pts = np.concatenate(path_segments, axis=0)
+
+    # Remove consecutive duplicates
+    mask = [True]
+    for i in range(1, len(all_pts)):
+        if norm(all_pts[i] - all_pts[i - 1]) > 1e-6:
+            mask.append(True)
+        else:
+            mask.append(False)
+    all_pts = all_pts[mask]
+
+    # ── Apply fillet (corner rounding) ─────────────────────────────────
+    # This now covers ALL corners: meander bends, jogs, AND the CLT
+    # L-shaped coupling arm corner.
+    filleted_pts = _fillet_path(all_pts, radius=fillet)
+
+    # ── Create single unified trace polygon ────────────────────────────
+    if len(filleted_pts) >= 2:
+        full_line = LineString(filleted_pts)
+        trace: Polygon = full_line.buffer(trace_width / 2, cap_style="flat", join_style="round")
+        etch: Polygon = full_line.buffer((trace_width + 2 * trace_gap) / 2, cap_style="flat", join_style="round")
+        centerline = full_line
     else:
-        meander_trace = Polygon()
-        meander_etch = Polygon()
-        meander_line = LineString()
-
-    # ── Union meander + CLT arm ────────────────────────────────────────
-    try:
-        trace = unary_union([meander_trace, clt_arm["trace"]])
-    except Exception:
-        trace = meander_trace
-
-    try:
-        etch = unary_union([meander_etch, clt_arm["etch"]])
-    except Exception:
-        etch = meander_etch
-
-    # Combined center-line
-    if meander_line.is_empty:
-        centerline = clt_arm["centerline"]
-    else:
-        try:
-            all_coords = list(meander_line.coords) + list(clt_arm["centerline"].coords)
-            centerline = LineString(all_coords)
-        except Exception:
-            centerline = meander_line
+        trace = Polygon()
+        etch = Polygon()
+        centerline = LineString()
 
     path_length = centerline.length if not centerline.is_empty else 0.0
 
@@ -457,7 +587,8 @@ def make_resonator(
         "trace": trace,
         "etch": etch,
         "centerline": centerline,
-        "meander_points": meander_pts,
+        "meander_points": all_pts,
+        "filleted_points": filleted_pts,
         "clt_arm": clt_arm,
         "position": (trace.centroid.x, trace.centroid.y) if not trace.is_empty else (0.0, 0.0),
         "start_pos": tuple(start_pos_arr),

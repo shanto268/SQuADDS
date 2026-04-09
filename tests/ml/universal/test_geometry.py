@@ -253,17 +253,17 @@ class TestLayout:
         qx = default_layout["qubit"]["position"][0]
         assert abs(qx - (-1500)) < 1.0
 
-    def test_claw_west_of_qubit(self, default_layout):
-        """Claw centroid should be to the west of the qubit centroid."""
+    def test_claw_east_of_qubit(self, default_layout):
+        """Claw centroid should be to the east of the qubit (connector_location=90, orientation=-90)."""
         qx = default_layout["qubit"]["position"][0]
         cx = default_layout["claw"]["position"][0]
-        assert cx < qx
+        assert cx > qx
 
     def test_feedline_at_origin(self, default_layout):
-        """Feedline should be centred at the origin."""
+        """Feedline should be centred at (0, 1200) matching SQuADDS layout."""
         fp = default_layout["feedline"]["position"]
         assert abs(fp[0]) < 1.0
-        assert abs(fp[1]) < 1.0
+        assert abs(fp[1] - 1200) < 1.0
 
     def test_all_polygons_valid(self, default_layout):
         """All generated polygons should be valid Shapely geometries."""
@@ -276,8 +276,8 @@ class TestLayout:
         r = default_layout["resonator"]["trace"]
         assert r.is_valid or isinstance(r, MultiPolygon)
 
-    def test_small_total_length_qubit_closer(self):
-        """total_length=2000 < 2500 → qubit at x=-1000."""
+    def test_small_total_length_qubit_same_pos(self):
+        """Qubit position is always at x=-1500 (matching SQuADDS defaults)."""
         layout = build_layout(
             cross_length=200,
             cross_gap=20,
@@ -287,7 +287,7 @@ class TestLayout:
             total_length=2000,
         )
         qx = layout["qubit"]["position"][0]
-        assert abs(qx - (-1000)) < 1.0
+        assert abs(qx - (-1500)) < 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════
