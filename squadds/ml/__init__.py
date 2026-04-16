@@ -80,6 +80,19 @@ def __getattr__(name):
         "plot_embedding_projection",
         "plot_projection_grid",
         "plot_similarity_bars",
+        "EmbeddingCollection",
+        "ClusterLabelStats",
+        "ClusteringBenchmarkResult",
+        "ArithmeticSpec",
+        "ArithmeticTrialResult",
+        "ArithmeticCaseSummary",
+        "ArithmeticBenchmarkResult",
+        "STANDARD_COMPONENT_LABELS",
+        "STANDARD_ARITHMETIC_SPECS",
+        "build_component_embedding_collection",
+        "benchmark_component_family_clustering",
+        "evaluate_standard_arithmetic_case",
+        "benchmark_standard_embedding_arithmetic",
     }
     if name in _graph_symbols:
         from squadds.ml.graph import __getattr__ as _graph_getattr

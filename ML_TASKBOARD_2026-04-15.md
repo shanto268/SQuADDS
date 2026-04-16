@@ -302,8 +302,8 @@ Build a robust, versioned, eventually GDS-native embedding and graph-ML ecosyste
 | ID | Priority | Status | Task | Depends on | Deliverable |
 |---|---|---:|---|---|---|
 | `C4.1` | `P1` | `review` | Build polished projection/visualization utilities for cosine similarity, nearest neighbors, and difference vectors | `C1.5` helpful | reusable visualization module |
-| `C4.2` | `P1` | `todo` | Define embedding clustering benchmark across component families | `C1.6` | benchmark + figures |
-| `C4.3` | `P1` | `todo` | Define embedding arithmetic benchmark beyond single anecdotal examples | `C2.1` | benchmark + scorecard |
+| `C4.2` | `P1` | `review` | Define embedding clustering benchmark across component families | `C1.6` | benchmark + figures |
+| `C4.3` | `P1` | `review` | Define embedding arithmetic benchmark beyond single anecdotal examples | `C2.1` | benchmark + scorecard |
 | `C4.4` | `P2` | `todo` | Define cross-convention normalization benchmark for GDS-native embeddings | `C3.7`, `C3.8` | robustness study |
 | `C4.5` | `P2` | `todo` | Draft universal-embedding paper outline | `C4.2`, `C4.3` | paper skeleton |
 
@@ -318,6 +318,18 @@ Build a robust, versioned, eventually GDS-native embedding and graph-ML ecosyste
     - `compute_label_centroids()`
     - `find_nearest_neighbors()`
     - `rank_difference_vector()`
+- `2026-04-15 benchmark + notebook pass` completed:
+  - added `squadds/ml/universal/benchmarks.py`
+  - added:
+    - `build_component_embedding_collection()`
+    - `benchmark_component_family_clustering()`
+    - `evaluate_standard_arithmetic_case()`
+    - `benchmark_standard_embedding_arithmetic()`
+  - refreshed `tutorials/Tutorial-12_Universal_GNN.ipynb` to demonstrate:
+    - maintained embedding projection / neighborhood utilities
+    - C4.2 clustering scorecards
+    - C4.3 arithmetic scorecards
+    - workflow helpers for graph construction, model init, and structured prediction readout
     - `plot_embedding_projection()`
     - `plot_projection_grid()`
     - `plot_similarity_bars()`
@@ -363,12 +375,11 @@ These are the tasks I would put at the top of the queue right now.
 | `2` | `B1` | strongest near-term paper foundation |
 | `3` | `B2` | theory comparison sharpens the paper story |
 | `4` | `B3` | extrapolation benchmark is central to the paper claim |
-| `5` | `C4.1` | the protocol layer is in place, so polished latent-space utilities are the next obvious user-facing win |
-| `6` | `C4.3` | arithmetic is now real package code, so it should become a benchmark instead of a single anecdote |
-| `7` | `C5.3` | a synthetic compositional dataset would accelerate graph-generalization debugging |
-| `8` | `C5.1` | topology holdout benchmarks are the next serious graph-ML science step |
-| `9` | `C3.1` | the next foundational unknown is the canonical layer ontology for GDS-native work |
-| `10` | `B5` | keep visible as a real dependency, even if blocked |
+| `5` | `C4.5` | the benchmark layer is in place, so the paper outline can now be grounded in real scorecards |
+| `6` | `C5.3` | a synthetic compositional dataset would accelerate graph-generalization debugging |
+| `7` | `C5.1` | topology holdout benchmarks are the next serious graph-ML science step |
+| `8` | `C3.1` | the next foundational unknown is the canonical layer ontology for GDS-native work |
+| `9` | `B5` | keep visible as a real dependency, even if blocked |
 
 ## External Dependencies and Waiting Items
 

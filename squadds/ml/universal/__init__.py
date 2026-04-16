@@ -84,6 +84,20 @@ _LAZY = {
     "plot_embedding_projection": "squadds.ml.universal.visualization",
     "plot_projection_grid": "squadds.ml.universal.visualization",
     "plot_similarity_bars": "squadds.ml.universal.visualization",
+    # benchmarks
+    "EmbeddingCollection": "squadds.ml.universal.benchmarks",
+    "ClusterLabelStats": "squadds.ml.universal.benchmarks",
+    "ClusteringBenchmarkResult": "squadds.ml.universal.benchmarks",
+    "ArithmeticSpec": "squadds.ml.universal.benchmarks",
+    "ArithmeticTrialResult": "squadds.ml.universal.benchmarks",
+    "ArithmeticCaseSummary": "squadds.ml.universal.benchmarks",
+    "ArithmeticBenchmarkResult": "squadds.ml.universal.benchmarks",
+    "STANDARD_COMPONENT_LABELS": "squadds.ml.universal.benchmarks",
+    "STANDARD_ARITHMETIC_SPECS": "squadds.ml.universal.benchmarks",
+    "build_component_embedding_collection": "squadds.ml.universal.benchmarks",
+    "benchmark_component_family_clustering": "squadds.ml.universal.benchmarks",
+    "evaluate_standard_arithmetic_case": "squadds.ml.universal.benchmarks",
+    "benchmark_standard_embedding_arithmetic": "squadds.ml.universal.benchmarks",
 }
 
 

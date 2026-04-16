@@ -37,6 +37,13 @@ from squadds.ml.universal.features.protocol import (
     encode_params,
 )
 from squadds.ml.universal.features.rasterizer import compute_shared_bounds, rasterize_fast, rasterize_in_bounds
+from squadds.ml.universal.benchmarks import (
+    STANDARD_ARITHMETIC_SPECS,
+    benchmark_component_family_clustering,
+    benchmark_standard_embedding_arithmetic,
+    build_component_embedding_collection,
+    evaluate_standard_arithmetic_case,
+)
 from squadds.ml.universal.geometry.claw import make_claw
 from squadds.ml.universal.geometry.layout import build_layout
 from squadds.ml.universal.visualization import (
@@ -473,3 +480,102 @@ class TestEmbeddingVisualization:
         assert fig._suptitle.get_text() == "Grid"
         ax_bar = plot_similarity_bars({"Qubit": 0.9, "Claw": 0.1}, title="Similarity")
         assert ax_bar.get_title() == "Similarity"
+
+
+class TestEmbeddingBenchmarks:
+    def test_build_component_embedding_collection_shape(self):
+        rows = [
+            {
+                "cross_length": 220.0,
+                "cross_gap": 22.0,
+                "claw_length": 52.0,
+                "ground_spacing": 6.0,
+                "coupling_length": 210.0,
+                "total_length": 3900.0,
+            },
+            {
+                "cross_length": 260.0,
+                "cross_gap": 28.0,
+                "claw_length": 58.0,
+                "ground_spacing": 8.0,
+                "coupling_length": 240.0,
+                "total_length": 4300.0,
+            },
+        ]
+
+        collection = build_component_embedding_collection(rows)
+
+        assert collection.embeddings.shape[0] == 8
+        assert collection.embeddings.shape[1] > 0
+        assert collection.labels[:4] == ["Qubit", "Claw", "Resonator", "Feedline"]
+        assert collection.identifiers[0] == "row-0:qubit"
+
+    def test_clustering_benchmark_reports_strong_separation(self):
+        embeddings = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.98, 0.02, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.02, 0.98, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.02, 0.98],
+            ],
+            dtype=np.float32,
+        )
+        labels = ["Qubit", "Qubit", "Claw", "Claw", "Resonator", "Resonator"]
+
+        result = benchmark_component_family_clustering(embeddings, labels)
+
+        assert result.centroid_top1_accuracy == pytest.approx(1.0)
+        assert result.nearest_neighbor_top1_accuracy == pytest.approx(1.0)
+        assert result.mean_intra_label_similarity > result.mean_inter_label_similarity
+        assert result.separation_gap > 0.8
+        assert {item.label for item in result.per_label} == {"Qubit", "Claw", "Resonator"}
+
+    def test_single_arithmetic_case_prefers_expected_component(self):
+        row = {
+            "cross_length": 240.0,
+            "cross_gap": 24.0,
+            "claw_length": 55.0,
+            "ground_spacing": 7.0,
+            "coupling_length": 230.0,
+            "total_length": 4100.0,
+        }
+
+        trial = evaluate_standard_arithmetic_case(
+            row,
+            STANDARD_ARITHMETIC_SPECS[0],
+            shape_resolution=48,
+        )
+
+        assert trial.expected_label == "Qubit"
+        assert trial.top1_success
+        assert trial.matches[0].label == "Qubit"
+        assert trial.expected_similarity > 0.95
+
+    def test_arithmetic_benchmark_runs_across_standard_cases(self):
+        rows = [
+            {
+                "cross_length": 230.0,
+                "cross_gap": 23.0,
+                "claw_length": 50.0,
+                "ground_spacing": 6.0,
+                "coupling_length": 220.0,
+                "total_length": 4000.0,
+            },
+            {
+                "cross_length": 270.0,
+                "cross_gap": 27.0,
+                "claw_length": 60.0,
+                "ground_spacing": 9.0,
+                "coupling_length": 250.0,
+                "total_length": 4400.0,
+            },
+        ]
+
+        result = benchmark_standard_embedding_arithmetic(rows, shape_resolution=48)
+
+        assert result.num_trials == len(rows) * len(STANDARD_ARITHMETIC_SPECS)
+        assert result.top1_accuracy >= 2.0 / 3.0
+        assert result.top2_accuracy >= result.top1_accuracy
+        assert len(result.per_case) == len(STANDARD_ARITHMETIC_SPECS)

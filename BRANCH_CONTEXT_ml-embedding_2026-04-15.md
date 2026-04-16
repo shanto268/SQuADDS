@@ -565,6 +565,46 @@ Verified behavior from that branch:
 
 - `uv run --extra dev --extra universal pytest tests/ml/universal/test_features.py tests/ml/universal/test_graph.py tests/ml/universal/test_model.py tests/ml/universal/test_trainer.py -q` -> `70 passed`
 
+### Benchmark + Tutorial 12 pass started on 2026-04-15
+
+Status: `Implemented in active working branch`
+
+The next pass turned the new embedding-space tooling into actual study primitives and refreshed Tutorial 12 so it demonstrates maintained package APIs instead of notebook-only analysis code.
+
+Implemented in `codex/universal-foundation-pass1`:
+
+- added [`squadds/ml/universal/benchmarks.py`](squadds/ml/universal/benchmarks.py)
+- added component-family clustering helpers:
+  - `build_component_embedding_collection()`
+  - `benchmark_component_family_clustering()`
+- added arithmetic-benchmark helpers:
+  - `evaluate_standard_arithmetic_case()`
+  - `benchmark_standard_embedding_arithmetic()`
+- exported the benchmark layer through:
+  - `squadds.ml.universal`
+  - `squadds.ml`
+- refreshed [`tutorials/Tutorial-12_Universal_GNN.ipynb`](tutorials/Tutorial-12_Universal_GNN.ipynb) so it now shows:
+  - versioned embedding configuration via `EmbeddingConfig`
+  - package-level projection / cosine / nearest-neighbor tooling
+  - C4.2 clustering scorecards across component families
+  - C4.3 arithmetic scorecards across many rows, plus single-case inspection
+  - workflow helpers for graph construction, model bootstrapping, and structured prediction readout
+
+Why this matters:
+
+- C4.2 and C4.3 are no longer notebook ideas; they are reusable benchmark APIs
+- Tutorial 12 is back to being a real productized research demo rather than a stash of custom cells
+- the universal embedding paper can now point to concrete benchmark definitions instead of one-off visual anecdotes
+
+Verified behavior from that branch:
+
+- `uv run --extra dev --extra universal pytest tests/ml/universal/test_features.py tests/ml/universal/test_graph.py tests/ml/universal/test_model.py tests/ml/universal/test_trainer.py -q` -> `74 passed`
+- `uv run --extra dev --extra universal python - <<'PY' ... PY` smoke-tested:
+  - `build_component_embedding_collection()`
+  - `benchmark_component_family_clustering()`
+  - `evaluate_standard_arithmetic_case()`
+  - `benchmark_standard_embedding_arithmetic()`
+
 ### GDS-native embedding target
 
 The desired end state is:
