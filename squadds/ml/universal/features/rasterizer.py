@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 from shapely.geometry import MultiPolygon, Point, Polygon
+from shapely.ops import unary_union
 
 
 def rasterize(
@@ -29,9 +30,6 @@ def rasterize(
         ``float32``.  Values are 1.0 inside the polygon, 0.0 outside.
     """
     mask = np.zeros((resolution, resolution), dtype=np.float32)
-
-    if isinstance(polygon, MultiPolygon):
-        polygon = max(polygon.geoms, key=lambda g: g.area)
 
     if polygon.is_empty:
         return mask
@@ -90,9 +88,6 @@ def rasterize_fast(
     """
     mask = np.zeros((resolution, resolution), dtype=np.float32)
 
-    if isinstance(polygon, MultiPolygon):
-        polygon = max(polygon.geoms, key=lambda g: g.area)
-
     if polygon.is_empty:
         return mask
 
@@ -132,3 +127,79 @@ def rasterize_fast(
 
     mask = mask_flat.reshape(resolution, resolution).astype(np.float32)
     return mask
+
+
+def compute_shared_bounds(
+    polygons: list[Polygon | MultiPolygon],
+    *,
+    padding: float = 0.0,
+    padding_fraction: float = 0.0,
+) -> tuple[float, float, float, float]:
+    """Compute a shared bounding box covering all polygons.
+
+    Args:
+        polygons: Polygons that should share a common coordinate frame.
+        padding: Absolute padding added to all sides in world coordinates.
+        padding_fraction: Additional padding relative to the largest bbox side.
+
+    Returns:
+        ``(minx, miny, maxx, maxy)`` covering the input polygons.
+
+    Raises:
+        ValueError: If no non-empty polygons are provided.
+    """
+    valid_polygons: list[Polygon | MultiPolygon] = []
+    for polygon in polygons:
+        if polygon.is_empty:
+            continue
+        valid_polygons.append(polygon)
+
+    if not valid_polygons:
+        raise ValueError("Cannot compute shared bounds for an empty polygon list.")
+
+    union = unary_union(valid_polygons)
+    minx, miny, maxx, maxy = union.bounds
+    width = maxx - minx
+    height = maxy - miny
+    pad = float(padding) + max(width, height) * float(padding_fraction)
+    return (minx - pad, miny - pad, maxx + pad, maxy + pad)
+
+
+def rasterize_in_bounds(
+    polygon: Polygon | MultiPolygon,
+    bounds: tuple[float, float, float, float],
+    resolution: int,
+) -> np.ndarray:
+    """Rasterize a polygon inside a caller-specified bounding box.
+
+    This is the key primitive for shared-frame embeddings: multiple polygons can
+    be rasterized within the same coordinate frame instead of each normalizing
+    to its own bounding box.
+    """
+    mask = np.zeros((resolution, resolution), dtype=np.float32)
+
+    if polygon.is_empty:
+        return mask
+
+    minx, miny, maxx, maxy = bounds
+    width = maxx - minx
+    height = maxy - miny
+    if width < 1e-10 or height < 1e-10:
+        return mask
+
+    col_coords = np.linspace(minx, maxx, resolution)
+    row_coords = np.linspace(maxy, miny, resolution)
+    cols, rows = np.meshgrid(col_coords, row_coords)
+    points = np.column_stack([cols.ravel(), rows.ravel()])
+
+    try:
+        from shapely import contains_xy
+
+        mask_flat = contains_xy(polygon, points[:, 0], points[:, 1])
+    except (ImportError, AttributeError):
+        from shapely.prepared import prep
+
+        prepared = prep(polygon)
+        mask_flat = np.array([prepared.contains(Point(x, y)) for x, y in points])
+
+    return mask_flat.reshape(resolution, resolution).astype(np.float32)

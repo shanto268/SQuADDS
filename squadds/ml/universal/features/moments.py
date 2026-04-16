@@ -33,9 +33,6 @@ def compute_moments(polygon: Polygon | MultiPolygon) -> np.ndarray:
         7       circularity             ``4pi * area / perimeter^2``
         ======  ======================  ================================
     """
-    if isinstance(polygon, MultiPolygon):
-        polygon = max(polygon.geoms, key=lambda g: g.area)
-
     if polygon.is_empty:
         return np.zeros(8, dtype=np.float32)
 

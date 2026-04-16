@@ -14,48 +14,10 @@ from shapely.ops import unary_union
 
 from squadds.ml.universal.features.moments import MOMENT_DIM, compute_moments
 from squadds.ml.universal.features.node_encoder import DEFAULT_SHAPE_RESOLUTION
-from squadds.ml.universal.features.rasterizer import rasterize_fast
+from squadds.ml.universal.features.rasterizer import rasterize_fast, rasterize_in_bounds
 
-
-def _rasterize_in_bounds(
-    polygon: Polygon | MultiPolygon,
-    bounds: tuple[float, float, float, float],
-    resolution: int,
-) -> np.ndarray:
-    """Rasterize a polygon within a specific bounding box (not its own).
-
-    Produces a 'masked' view: the component's shape rendered within
-    the full layout's coordinate frame.
-    """
-    mask = np.zeros((resolution, resolution), dtype=np.float32)
-    if isinstance(polygon, MultiPolygon):
-        polygon = max(polygon.geoms, key=lambda g: g.area)
-    if polygon.is_empty:
-        return mask
-
-    minx, miny, maxx, maxy = bounds
-    width = maxx - minx
-    height = maxy - miny
-    if width < 1e-10 or height < 1e-10:
-        return mask
-
-    col_coords = np.linspace(minx, maxx, resolution)
-    row_coords = np.linspace(maxy, miny, resolution)
-    cols, rows = np.meshgrid(col_coords, row_coords)
-    points = np.column_stack([cols.ravel(), rows.ravel()])
-
-    try:
-        from shapely import contains_xy
-
-        mask_flat = contains_xy(polygon, points[:, 0], points[:, 1])
-    except (ImportError, AttributeError):
-        from shapely.geometry import Point
-        from shapely.prepared import prep
-
-        prepared = prep(polygon)
-        mask_flat = np.array([prepared.contains(Point(x, y)) for x, y in points])
-
-    return mask_flat.reshape(resolution, resolution).astype(np.float32)
+# Backward-compatible alias used by the notebook exploration code.
+_rasterize_in_bounds = rasterize_in_bounds
 
 
 def compute_hub_embedding(
@@ -180,7 +142,7 @@ def compute_spatial_edge_features(
             cy_rel = np.float32(poly.centroid.y - layout_cy)
             area_frac = np.float32(poly.area / layout_area)
             perim_frac = np.float32(poly.length / layout_perimeter)
-            masked_shape = _rasterize_in_bounds(poly, layout_bounds, R).flatten()
+            masked_shape = rasterize_in_bounds(poly, layout_bounds, R).flatten()
 
             feat = np.concatenate([[cx_rel, cy_rel, area_frac, perim_frac], masked_shape]).astype(np.float32)
 

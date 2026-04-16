@@ -18,10 +18,12 @@ import torch
 from torch_geometric.data import HeteroData
 
 from squadds.ml.universal.features.edge_extractor import EdgeFeatureExtractor
-from squadds.ml.universal.features.node_encoder import (
-    DEFAULT_SHAPE_RESOLUTION,
-    compute_static_embedding,
-    get_polygon_for_component,
+from squadds.ml.universal.features.node_encoder import DEFAULT_SHAPE_RESOLUTION, get_polygon_for_component
+from squadds.ml.universal.features.protocol import (
+    DEFAULT_EMBEDDING_CONFIG,
+    EmbeddingConfig,
+    EmbeddingMode,
+    compute_component_embedding,
 )
 from squadds.ml.universal.graph.netlist import CircuitNetlist
 from squadds.ml.universal.graph.virtual_hub import compute_hub_embedding, compute_spatial_edge_features
@@ -39,9 +41,26 @@ class UniversalGraphBuilder:
         self,
         shape_resolution: int = DEFAULT_SHAPE_RESOLUTION,
         cache_dir: str | None = None,
+        embedding_config: EmbeddingConfig | None = None,
     ):
-        self.shape_resolution = shape_resolution
-        self.edge_extractor = EdgeFeatureExtractor(shape_resolution=shape_resolution)
+        if embedding_config is None:
+            embedding_config = EmbeddingConfig(
+                version=DEFAULT_EMBEDDING_CONFIG.version,
+                mode=DEFAULT_EMBEDDING_CONFIG.mode,
+                shape_resolution=shape_resolution,
+                shared_bounds_padding=DEFAULT_EMBEDDING_CONFIG.shared_bounds_padding,
+                shared_bounds_padding_fraction=DEFAULT_EMBEDDING_CONFIG.shared_bounds_padding_fraction,
+                param_hash_dim=DEFAULT_EMBEDDING_CONFIG.param_hash_dim,
+            )
+        elif embedding_config.shape_resolution != shape_resolution:
+            raise ValueError(
+                "shape_resolution must match embedding_config.shape_resolution "
+                f"(got {shape_resolution} and {embedding_config.shape_resolution})."
+            )
+
+        self.embedding_config = embedding_config
+        self.shape_resolution = embedding_config.shape_resolution
+        self.edge_extractor = EdgeFeatureExtractor(shape_resolution=self.shape_resolution)
         self.cache_dir = cache_dir
         if cache_dir and not os.path.exists(cache_dir):
             os.makedirs(cache_dir, exist_ok=True)
@@ -52,6 +71,7 @@ class UniversalGraphBuilder:
             {
                 "components": [(c.name, c.component_type) for c in netlist.components],
                 "edges": [(e.src, e.dst, e.coupling_type) for e in netlist.edges],
+                "embedding_config": self.embedding_config.to_metadata(),
             },
             sort_keys=True,
         )
@@ -99,8 +119,8 @@ class UniversalGraphBuilder:
         data = HeteroData()
 
         # ── Component nodes ───────────────────────────────────────────
-        node_features = []
         component_polygons = []
+        component_params = []
         component_types = []
 
         for comp_spec in netlist.components:
@@ -110,17 +130,27 @@ class UniversalGraphBuilder:
 
             polygon = get_polygon_for_component(comp_data)
             params = comp_data.get("params", {})
-            embedding = compute_static_embedding(polygon, params=params, shape_resolution=R)
-
-            node_features.append(torch.from_numpy(embedding))
             component_polygons.append(polygon)
+            component_params.append(params)
             component_types.append(comp_spec.component_type)
+
+        shared_reference_polygons = component_polygons if self.embedding_config.mode != EmbeddingMode.GEOMETRY_ONLY else None
+        node_features = []
+        for polygon, params in zip(component_polygons, component_params):
+            embedding = compute_component_embedding(
+                polygon,
+                params=params,
+                config=self.embedding_config,
+                reference_polygons=shared_reference_polygons,
+            )
+            node_features.append(torch.from_numpy(embedding))
 
         data["component"].x = torch.stack(node_features, dim=0)
 
         # Store component types and names as metadata
         data["component"].component_type = component_types
         data["component"].component_name = [c.name for c in netlist.components]
+        data["component"].embedding_config = self.embedding_config.to_metadata()
 
         # ── Node targets: ALL nodes get ALL 5 targets ─────────────────
         # No NaN masking during training — the GNN learns which design
