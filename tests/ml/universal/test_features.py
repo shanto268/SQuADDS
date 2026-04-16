@@ -254,6 +254,11 @@ class TestStaticEmbedding:
         out = get_polygon_for_component({"trace": square})
         assert out.equals(square)
 
+    def test_get_polygon_for_component_polygon_key(self):
+        square = box(0, 0, 100, 100)
+        out = get_polygon_for_component({"polygon": square})
+        assert out.equals(square)
+
     def test_get_polygon_for_component_raises(self):
         with pytest.raises(ValueError, match="No polygon found"):
             get_polygon_for_component({"params": {"a": 1}})

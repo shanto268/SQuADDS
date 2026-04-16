@@ -64,7 +64,7 @@ def static_embedding_dim(shape_resolution: int = DEFAULT_SHAPE_RESOLUTION) -> in
 def get_polygon_for_component(comp_data: dict) -> Polygon | MultiPolygon:
     """Extract the primary polygon from a component dictionary.
 
-    Tries standard keys in order: trace, cross, arm.
+    Tries standard keys in order: trace, cross, arm, polygon.
 
     Args:
         comp_data: Output dict from a ``make_*`` geometry function.
@@ -75,7 +75,7 @@ def get_polygon_for_component(comp_data: dict) -> Polygon | MultiPolygon:
     Raises:
         ValueError: If no polygon key is found.
     """
-    for key in ("trace", "cross", "arm"):
+    for key in ("trace", "cross", "arm", "polygon"):
         if key in comp_data and isinstance(comp_data[key], (Polygon, MultiPolygon)):
             return comp_data[key]
     raise ValueError(f"No polygon found in component data. Keys: {list(comp_data.keys())}")
