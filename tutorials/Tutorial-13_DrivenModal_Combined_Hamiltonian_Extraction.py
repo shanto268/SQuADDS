@@ -70,6 +70,7 @@ import pandas as pd
 from squadds import Analyzer, SQuADDS_DB
 from squadds.simulations.drivenmodal import (
     build_segmented_coupled_system_requests,
+    coupled_hamiltonian_from_prepared_runs,
     coupled_reference_summary,
     default_hamiltonian_setup,
     hamiltonian_comparison_table,
@@ -237,6 +238,23 @@ port_table = pd.DataFrame(
 display(port_table)
 
 
+# %% [markdown]
+# ## State-dependent Josephson inductance
+#
+# `LJ_bare_nH` is the linear Josephson inductance from the transmon design options
+# (`aedt_q3d_inductance` / `Lj` / `LJ`). The ground-state and excited-state
+# columns use the same workflow as `coupled_reference_summary(...)`: helper
+# `transmon_state_inductances(...)` in `squadds.simulations.drivenmodal.workflows`
+# builds a zero-temperature `scqubits.Transmon` with
+# $E_J$ from the bare $L_J$ and $E_C$ from the qubit shunt capacitance (via the
+# database `cross_to_ground` and `cross_to_claw` pair capacitances in fF).
+# It then evaluates the transmon `cos_phi_operator` in the ground and
+# first-excited eigenstates. The effective inductances are
+# $L_J^{(g)} = L_{J,\mathrm{bare}} / \langle \cos\phi \rangle_g$ and
+# $L_J^{(e)} = L_{J,\mathrm{bare}} / \langle \cos\phi \rangle_e$, matching how the
+# coupled driven-modal workflow assigns JJ terminations when it reduces the
+# exported multiport network.
+
 # %%
 jj_table = pd.DataFrame(
     [
@@ -290,6 +308,7 @@ display(jj_table)
 RUN_ANSYS = os.environ.get("SQUADDS_RUN_ANSYS") == "1"
 CHECKPOINT_ROOT = Path("tutorials/runtime/drivenmodal_combined_hamiltonian/checkpoints")
 
+prepared_runs = None
 if RUN_ANSYS:
     from squadds.simulations.drivenmodal.hfss_runner import run_drivenmodal_request
 
@@ -352,14 +371,17 @@ if RUN_ANSYS:
 # same table is generated from the exported driven-modal network data.
 
 # %%
-drivenmodal_hamiltonian = {
-    "qubit_frequency_ghz": reference["qubit_frequency_ghz"],
-    "anharmonicity_mhz": reference["anharmonicity_mhz"],
-    "cavity_frequency_ghz": reference["cavity_frequency_ghz"],
-    "kappa_mhz": reference["kappa_mhz"],
-    "g_mhz": reference["g_mhz"],
-    "chi_mhz": float("nan"),
-}
+if RUN_ANSYS:
+    drivenmodal_hamiltonian = coupled_hamiltonian_from_prepared_runs(prepared_runs)
+else:
+    drivenmodal_hamiltonian = {
+        "qubit_frequency_ghz": reference["qubit_frequency_ghz"],
+        "anharmonicity_mhz": reference["anharmonicity_mhz"],
+        "cavity_frequency_ghz": reference["cavity_frequency_ghz"],
+        "kappa_mhz": reference["kappa_mhz"],
+        "g_mhz": reference["g_mhz"],
+        "chi_mhz": float("nan"),
+    }
 
 display(hamiltonian_comparison_table(drivenmodal=drivenmodal_hamiltonian, squadds=reference))
 

@@ -50,6 +50,7 @@ from squadds.simulations.drivenmodal import (
     default_capacitance_setup,
     default_capacitance_sweep,
     maxwell_matrix_interpretation,
+    pair_capacitances_fF_from_run_dir,
 )
 
 try:
@@ -221,6 +222,8 @@ display(layer_stack_table)
 RUN_ANSYS = os.environ.get("SQUADDS_RUN_ANSYS") == "1"
 CHECKPOINT_ROOT = Path("tutorials/runtime/drivenmodal_capacitance/checkpoints")
 
+qubit_prepared = None
+ncap_prepared = None
 if RUN_ANSYS:
     from squadds.simulations.drivenmodal.hfss_runner import run_drivenmodal_request
 
@@ -263,8 +266,21 @@ if RUN_ANSYS:
 qubit_q3d = capacitance_reference_summary(qubit_row, system_kind="qubit_claw")
 ncap_q3d = capacitance_reference_summary(ncap_row, system_kind="ncap")
 
-qubit_drivenmodal_fF = qubit_q3d
-ncap_drivenmodal_fF = ncap_q3d
+extraction_freq_ghz = float(setup.freq_ghz)
+if RUN_ANSYS:
+    qubit_drivenmodal_fF = pair_capacitances_fF_from_run_dir(
+        qubit_prepared["manifest"]["run_dir"],
+        system_kind="qubit_claw",
+        extraction_freq_ghz=extraction_freq_ghz,
+    )
+    ncap_drivenmodal_fF = pair_capacitances_fF_from_run_dir(
+        ncap_prepared["manifest"]["run_dir"],
+        system_kind="ncap",
+        extraction_freq_ghz=extraction_freq_ghz,
+    )
+else:
+    qubit_drivenmodal_fF = qubit_q3d
+    ncap_drivenmodal_fF = ncap_q3d
 
 display(capacitance_comparison_table(drivenmodal_fF=qubit_drivenmodal_fF, q3d_fF=qubit_q3d))
 display(capacitance_comparison_table(drivenmodal_fF=ncap_drivenmodal_fF, q3d_fF=ncap_q3d))
