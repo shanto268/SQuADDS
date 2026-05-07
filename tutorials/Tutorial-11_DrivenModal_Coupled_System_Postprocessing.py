@@ -141,7 +141,7 @@ SETUP_TEMPLATE = DrivenModalSetupSpec(
     max_delta_s=0.005,
     max_passes=20,
     min_passes=2,
-    min_converged=5,
+    min_converged=7,
     pct_refinement=30,
     basis_order=-1,
 )
@@ -149,11 +149,11 @@ SWEEP_TEMPLATE = DrivenModalSweepSpec(
     name="DrivenModalSweep",
     start_ghz=5.0,
     stop_ghz=6.0,
-    count=20000,
+    count=22000,
     sweep_type="Interpolating",
     save_fields=False,
     interpolation_tol=0.005,
-    interpolation_max_solutions=400,
+    interpolation_max_solutions=22000,
 )
 ARTIFACTS = DrivenModalArtifactPolicy(
     export_touchstone=True,

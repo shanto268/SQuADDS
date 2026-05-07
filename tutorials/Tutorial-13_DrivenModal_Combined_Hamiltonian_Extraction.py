@@ -62,6 +62,7 @@
 # %%
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 
@@ -74,6 +75,7 @@ from squadds.simulations.drivenmodal import (
     coupled_reference_summary,
     default_hamiltonian_setup,
     hamiltonian_comparison_table,
+    hamiltonian_from_summary_json,
     segmented_hamiltonian_sweeps,
 )
 
@@ -83,6 +85,13 @@ except ImportError:  # pragma: no cover
 
     def display(obj):
         print(obj)
+
+
+# %%
+PRESIMULATED_ROOT = Path("tutorials/presimulated/drivenmodal_coupled_system/quarter_wave_cryo1145_fix4")
+PRESIMULATED_SUMMARY = PRESIMULATED_ROOT / "summary.json"
+presimulated_summary = json.loads(PRESIMULATED_SUMMARY.read_text(encoding="utf-8"))
+presimulated_reference = presimulated_summary["reference"]
 
 
 # %% [markdown]
@@ -104,6 +113,12 @@ except ImportError:  # pragma: no cover
 # whose simulated Hamiltonian parameters are close to `target_params`. The
 # returned row contains both the Qiskit Metal design options and the reference
 # simulation results that we will compare against later.
+#
+# For this public notebook we choose the target from the bundled pre-simulated
+# artifact. That keeps the selected SQuADDS row, the checked-in HFSS data, and
+# the comparison table tied to the same physical geometry. In a new design
+# search, replace only the `target_params` values and regenerate the Ansys
+# artifact bundle for the new row.
 
 # %%
 db = SQuADDS_DB()
@@ -117,11 +132,11 @@ with contextlib.redirect_stdout(io.StringIO()):
 analyzer = Analyzer(db)
 
 target_params = {
-    "qubit_frequency_GHz": 4.0,
-    "anharmonicity_MHz": -130,
-    "cavity_frequency_GHz": 8.9,
-    "kappa_kHz": 300,
-    "g_MHz": 50,
+    "qubit_frequency_GHz": presimulated_reference["qubit_frequency_ghz"],
+    "anharmonicity_MHz": presimulated_reference["anharmonicity_mhz"],
+    "cavity_frequency_GHz": presimulated_reference["cavity_frequency_ghz"],
+    "kappa_kHz": presimulated_reference["kappa_mhz"] * 1000,
+    "g_MHz": presimulated_reference["g_mhz"],
     "resonator_type": "quarter",
 }
 
@@ -277,8 +292,9 @@ display(jj_table)
 # environment variable `SQUADDS_RUN_ANSYS` as the switch between documentation
 # mode and solver mode. With `SQUADDS_RUN_ANSYS=1`, the cell renders and solves
 # the three frequency windows on the Windows Ansys workstation. With the
-# variable unset, the notebook remains executable on machines without Ansys and
-# still shows the exact sweep plan and reference target.
+# variable unset, the notebook loads the checked-in pre-simulated HFSS artifact
+# bundle. That means docsite readers see real driven-modal Hamiltonian numbers
+# without needing Ansys locally.
 #
 # `run_drivenmodal_request(...)` is the notebook-facing entry point for the
 # Ansys execution contract. For each request, the Ansys executor uses that
@@ -303,6 +319,12 @@ display(jj_table)
 # That bundle contains the request payload, layer stack, rendered-geometry
 # diagnostics, exported network data, and post-processing tables. The bundle is
 # what lets the physics extraction be rerun without launching HFSS again.
+#
+# The pre-simulated bundle shipped with this tutorial contains a compact
+# `summary.json`, the raw 3-port Touchstone file, and the scenario summary used
+# to sanity-check port terminations. The summary is deliberately loaded through
+# the same public extractor used for live Ansys runs, with `require_complete=True`
+# so incomplete solver outputs cannot silently render as tutorial results.
 
 # %%
 RUN_ANSYS = os.environ.get("SQUADDS_RUN_ANSYS") == "1"
@@ -317,6 +339,8 @@ if RUN_ANSYS:
     }
     for band, prepared in prepared_runs.items():
         print(f"{band}: {prepared['manifest']['run_dir']}")
+else:
+    print(f"Using pre-simulated HFSS artifacts from {PRESIMULATED_ROOT}")
 
 
 # %% [markdown]
@@ -372,18 +396,21 @@ if RUN_ANSYS:
 
 # %%
 if RUN_ANSYS:
-    drivenmodal_hamiltonian = coupled_hamiltonian_from_prepared_runs(prepared_runs)
+    drivenmodal_hamiltonian = coupled_hamiltonian_from_prepared_runs(prepared_runs, require_complete=True)
+    result_source = "Live Ansys driven-modal run"
 else:
-    drivenmodal_hamiltonian = {
-        "qubit_frequency_ghz": reference["qubit_frequency_ghz"],
-        "anharmonicity_mhz": reference["anharmonicity_mhz"],
-        "cavity_frequency_ghz": reference["cavity_frequency_ghz"],
-        "kappa_mhz": reference["kappa_mhz"],
-        "g_mhz": reference["g_mhz"],
-        "chi_mhz": float("nan"),
-    }
+    drivenmodal_hamiltonian = hamiltonian_from_summary_json(PRESIMULATED_SUMMARY, require_complete=True)
+    result_source = str(PRESIMULATED_SUMMARY)
+
+print(f"Driven-modal result source: {result_source}")
 
 display(hamiltonian_comparison_table(drivenmodal=drivenmodal_hamiltonian, squadds=reference))
+
+
+# %%
+if not RUN_ANSYS:
+    display(pd.DataFrame([presimulated_summary["solver"]]))
+    display(pd.DataFrame(presimulated_summary["comparison_rows"]))
 
 
 # %% [markdown]

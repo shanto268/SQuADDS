@@ -112,7 +112,24 @@ def pair_capacitances_fF_from_run_dir(
     )
 
 
-def hamiltonian_from_summary_mapping(extracted: Mapping[str, Any] | None) -> dict[str, float]:
+def _assert_complete_hamiltonian(values: Mapping[str, float], *, source: str) -> None:
+    missing = [key for key in HAMILTONIAN_KEYS if key not in values]
+    not_finite = [key for key in HAMILTONIAN_KEYS if key in values and not np.isfinite(float(values[key]))]
+    if missing or not_finite:
+        details = []
+        if missing:
+            details.append("missing: " + ", ".join(missing))
+        if not_finite:
+            details.append("not finite: " + ", ".join(not_finite))
+        raise ValueError(f"Incomplete driven-modal Hamiltonian summary from {source} ({'; '.join(details)}).")
+
+
+def hamiltonian_from_summary_mapping(
+    extracted: Mapping[str, Any] | None,
+    *,
+    require_complete: bool = False,
+    source: str = "summary mapping",
+) -> dict[str, float]:
     """Normalize a post-processing ``extracted`` record to ``HAMILTONIAN_KEYS``."""
     if extracted is None:
         raise ValueError("extracted must not be None.")
@@ -123,20 +140,35 @@ def hamiltonian_from_summary_mapping(extracted: Mapping[str, Any] | None) -> dic
             return float("nan")
         return float(raw)
 
-    return {key: as_float(key) for key in HAMILTONIAN_KEYS}
+    values = {key: as_float(key) for key in HAMILTONIAN_KEYS}
+    if require_complete:
+        _assert_complete_hamiltonian(values, source=source)
+    return values
 
 
-def hamiltonian_from_summary_json(summary_path: str | Path) -> dict[str, float]:
+def hamiltonian_from_summary_json(
+    summary_path: str | Path,
+    *,
+    require_complete: bool = False,
+) -> dict[str, float]:
     """Read ``artifacts/summary.json`` written by coupled driven-modal post-processing."""
     path = Path(summary_path)
     if not path.is_file():
         raise FileNotFoundError(f"Missing summary JSON at {path}.")
     payload = json.loads(path.read_text(encoding="utf-8"))
     extracted = payload.get("extracted")
-    return hamiltonian_from_summary_mapping(extracted)
+    return hamiltonian_from_summary_mapping(
+        extracted,
+        require_complete=require_complete,
+        source=str(path),
+    )
 
 
-def coupled_hamiltonian_from_prepared_runs(prepared_runs: Mapping[str, Any]) -> dict[str, float]:
+def coupled_hamiltonian_from_prepared_runs(
+    prepared_runs: Mapping[str, Any],
+    *,
+    require_complete: bool = False,
+) -> dict[str, float]:
     """Load extracted Hamiltonian metrics from the first available band ``summary.json``."""
     band_preferences = ("resonator_band", "qubit_band", "bridge_band")
     tried: list[str] = []
@@ -150,7 +182,7 @@ def coupled_hamiltonian_from_prepared_runs(prepared_runs: Mapping[str, Any]) -> 
         summary_path = run_dir / "artifacts" / "summary.json"
         tried.append(str(summary_path))
         if summary_path.is_file():
-            return hamiltonian_from_summary_json(summary_path)
+            return hamiltonian_from_summary_json(summary_path, require_complete=require_complete)
     detail = "\n  - ".join(tried) if tried else "(no segmented band entries were present)."
     raise FileNotFoundError(
         "No coupled summary.json found in expected locations. Searched:\n  - "

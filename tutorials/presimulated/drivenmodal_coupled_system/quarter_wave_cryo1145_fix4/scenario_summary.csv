@@ -1,0 +1,9 @@
+group,scenario,terminated_port,load_kind,remaining_port_1,remaining_port_2,mag_min_freq_ghz,residual_min_freq_ghz,phase_grad_peak_freq_ghz,complex_grad_peak_freq_ghz,notch_freq_ghz,notch_min_db,edge_flag,fwhm_hz,phase_at_feature_deg
+qubit_port,jj_open,2,jj_open,feedline_input,feedline_output,8.775717078049002,8.775717078049002,8.775717078049002,8.775853447883994,8.775717078049002,-119.22094064023176,False,117331.15740488289,-89.46540354810482
+qubit_port,jj_short,2,jj_short,feedline_input,feedline_output,8.0,8.0,8.0,8.0,8.0,,True,0.0,
+qubit_port,jj_lj_ground_pure_L,2,jj_lj_ground_pure_L,feedline_input,feedline_output,8.775989817718987,8.775989817718987,8.775989817718987,8.776126187553979,8.775989817718987,-118.9531539983286,False,119937.23276191407,-89.48021151378805
+qubit_port,jj_lj_excited_pure_L,2,jj_lj_excited_pure_L,feedline_input,feedline_output,8.775944361107323,8.775944361107323,8.776126187553979,8.776080730942317,8.775944361107323,-117.44270215485327,False,135382.95376267444,-89.16141464695302
+qubit_port,jj_lj_ground_physical,2,jj_lj_ground_physical,feedline_input,feedline_output,8.775989817718987,8.775989817718987,8.775989817718987,8.776171644165643,8.775989817718987,-131.8182757402654,False,66081.42181687185,-1.4277121491863518
+qubit_port,jj_lj_excited_physical,2,jj_lj_excited_physical,feedline_input,feedline_output,8.775944361107323,8.775944361107323,8.775944361107323,8.776126187553979,8.775944361107323,-127.69272296594895,False,72053.26519607638,-57.17883647897491
+feedline_port,feedline_output_open,1,feedline_output_open,feedline_input,jj,8.0,8.0,8.774853402427384,8.774853402427384,8.0,-118.82339004906564,True,0.0,61.848262790616936
+feedline_port,feedline_output_short,1,feedline_output_short,feedline_input,jj,8.0,8.0,8.0,8.0,8.0,,True,0.0,

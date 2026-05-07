@@ -1,0 +1,89 @@
+{
+  "artifacts": {
+    "scenario_summary_csv": "scenario_summary.csv"
+  },
+  "comparison_rows": [
+    {
+      "drivenmodal": 8.775989817718987,
+      "percent_error": -2.0901088330429034,
+      "quantity": "cavity_frequency_ghz",
+      "reference": 8.96333323745
+    },
+    {
+      "drivenmodal": 0.11993723276191408,
+      "percent_error": -57.617176961698206,
+      "quantity": "kappa_mhz",
+      "reference": 0.282985474218
+    },
+    {
+      "drivenmodal": 59.85377913128809,
+      "percent_error": 14.423608298100877,
+      "quantity": "g_mhz",
+      "reference": 52.30894220304142
+    },
+    {
+      "drivenmodal": 3.887708322254131,
+      "percent_error": 7.310658895810638e-13,
+      "quantity": "qubit_frequency_ghz",
+      "reference": 3.8877083222541025
+    },
+    {
+      "drivenmodal": -128.73770853316557,
+      "percent_error": 2.0708434031864415e-11,
+      "quantity": "anharmonicity_mhz",
+      "reference": -128.7377085331389
+    },
+    {
+      "drivenmodal": -0.04545661166381836,
+      "percent_error": null,
+      "quantity": "chi_mhz",
+      "reference": null
+    }
+  ],
+  "description": "Pre-simulated HFSS driven-modal Tutorial 11 quarter-wave Hamiltonian extraction artifact bundle.",
+  "excited_metrics": {
+    "f_res_hz": 8775944361.107323,
+    "fwhm_hz": 135382.95376267444,
+    "left_index": 17068.519902862663,
+    "min_s21_db": -117.44270215485324,
+    "resonance_at_sweep_edge": 0.0,
+    "right_index": 17071.498192462488
+  },
+  "extracted": {
+    "anharmonicity_mhz": -128.73770853316557,
+    "cavity_frequency_ghz": 8.775989817718987,
+    "chi_mhz": -0.04545661166381836,
+    "g_mhz": 59.85377913128809,
+    "kappa_mhz": 0.11993723276191408,
+    "qubit_frequency_ghz": 3.887708322254131
+  },
+  "ground_metrics": {
+    "f_res_hz": 8775989817.718987,
+    "fwhm_hz": 119937.23276191407,
+    "left_index": 17069.681966863656,
+    "min_s21_db": -118.9531539983286,
+    "resonance_at_sweep_edge": 0.0,
+    "right_index": 17072.320466047186
+  },
+  "postprocessing_warning": null,
+  "reference": {
+    "alpha_hz": -128737708.53316557,
+    "anharmonicity_mhz": -128.7377085331389,
+    "cavity_frequency_ghz": 8.96333323745,
+    "f_q_hz": 3887708322.254131,
+    "g_mhz": 52.30894220304142,
+    "kappa_mhz": 0.282985474218,
+    "lj_excited_h": 1.1812082364753422e-08,
+    "lj_ground_h": 1.0314432826767955e-08,
+    "qubit_frequency_ghz": 3.8877083222541025
+  },
+  "solver": {
+    "ansys": "HFSS driven modal",
+    "substrate_relative_permittivity": 11.45,
+    "sweep_points": 22000,
+    "sweep_start_ghz": 8.0,
+    "sweep_stop_ghz": 9.0,
+    "sweep_type": "Interpolating"
+  },
+  "source_run": "tutorial11-quarter-000-v6-zoom-8to9-22000-cryo1145-fix4"
+}

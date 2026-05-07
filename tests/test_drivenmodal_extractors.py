@@ -1,13 +1,18 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from squadds.simulations.drivenmodal.extractors import (
     coupled_hamiltonian_from_prepared_runs,
+    hamiltonian_from_summary_json,
     hamiltonian_from_summary_mapping,
     pair_capacitances_fF_from_y_frame,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_pair_capacitances_fF_from_y_frame_qubit_claw_maps_maxwell_pairs():
@@ -43,6 +48,24 @@ def test_hamiltonian_from_summary_mapping_fills_hamiltonian_keys_with_nan_for_mi
     assert np.isnan(row["chi_mhz"])
 
 
+def test_hamiltonian_from_summary_mapping_can_require_complete_values():
+    complete = {
+        "qubit_frequency_ghz": 4.0,
+        "anharmonicity_mhz": -130.0,
+        "cavity_frequency_ghz": 8.8,
+        "kappa_mhz": 0.12,
+        "g_mhz": 60.0,
+        "chi_mhz": -0.04,
+    }
+
+    assert hamiltonian_from_summary_mapping(complete, require_complete=True)["g_mhz"] == 60.0
+
+    incomplete = dict(complete)
+    incomplete["g_mhz"] = np.nan
+    with pytest.raises(ValueError, match="not finite: g_mhz"):
+        hamiltonian_from_summary_mapping(incomplete, require_complete=True)
+
+
 def test_coupled_hamiltonian_from_prepared_runs_prefers_resonator_band_summary(tmp_path):
     resonator = tmp_path / "res"
     bridge = tmp_path / "bridge"
@@ -59,3 +82,20 @@ def test_coupled_hamiltonian_from_prepared_runs_prefers_resonator_band_summary(t
     out = coupled_hamiltonian_from_prepared_runs(prepared)
     assert out["qubit_frequency_ghz"] == 3.0
     assert out["chi_mhz"] == 0.1
+
+
+def test_presimulated_tutorial11_hamiltonian_artifact_is_complete():
+    summary = (
+        ROOT
+        / "tutorials"
+        / "presimulated"
+        / "drivenmodal_coupled_system"
+        / "quarter_wave_cryo1145_fix4"
+        / "summary.json"
+    )
+
+    hamiltonian = hamiltonian_from_summary_json(summary, require_complete=True)
+
+    assert hamiltonian["cavity_frequency_ghz"] > 0
+    assert hamiltonian["kappa_mhz"] > 0
+    assert hamiltonian["g_mhz"] > 0
